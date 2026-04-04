@@ -1,6 +1,7 @@
 """
-APEX Sniper — PrimeFlow Algo Engine (Lenient + Medium + Strict)
-No duplicate buys. One position per coin at a time.
+APEX Sniper — PrimeFlow Algo Engine
+Auto-loads API keys from Railway environment variables.
+No duplicate buys. Full TP/SL on Bybit.
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -10,8 +11,9 @@ import httpx
 app = FastAPI()
 
 state = {
-    "api_key": "", "api_secret": "",
-    "risk_pct": 5.0, "tp_mult1": 1.0, "tp_mult2": 2.0, "tp_mult3": 3.2,
+    "api_key":    os.getenv("BYBIT_API_KEY", ""),
+    "api_secret": os.getenv("BYBIT_API_SECRET", ""),
+    "risk_pct": 5.0, "tp_mult1": 1.0, "tp_mult2": 2.0,
     "sl_mult": 1.2, "max_pos": 2,
     "signal_mode": "lenient",
     "bot_on": True, "balance": 0.0,
@@ -220,23 +222,23 @@ async def scan_once():
         new_syms = [i.get("symbol","") for i in pairs if i.get("symbol","") not in seen_symbols]
         for s in new_syms: seen_symbols.add(s)
         state["stats"]["new"] = len(seen_symbols)
+        print(f"Scan: {len(pairs)} pairs, {len(new_syms)} new, {len(seen_symbols)} total seen")
 
+        # Analyse new symbols
         for sym in new_syms[:4]:
-            # ── FIX: skip if already in position or pending ──
             if sym in state["positions"]: continue
             if any(p["symbol"]==sym for p in state["pending"]): continue
             await analyse(sym); await asyncio.sleep(0.5)
 
-        sample = random.sample(list(seen_symbols), min(8, len(seen_symbols)))
+        # Analyse random sample of all known symbols every cycle
+        all_syms = [s for s in seen_symbols if s not in state["positions"] and not any(p["symbol"]==s for p in state["pending"])]
+        sample = random.sample(all_syms, min(20, len(all_syms)))
         for sym in sample:
-            # ── FIX: skip if already in position or pending ──
-            if sym in state["positions"]: continue
-            if any(p["symbol"]==sym for p in state["pending"]): continue
-            await analyse(sym); await asyncio.sleep(0.3)
+            await analyse(sym); await asyncio.sleep(0.2)
 
+        # Auto-execute pending signals
         for sig in list(state["pending"]):
             if len(state["positions"]) >= state["max_pos"]: break
-            # ── FIX: remove from pending if already in position ──
             if sig["symbol"] in state["positions"]:
                 state["pending"] = [s for s in state["pending"] if s["symbol"] != sig["symbol"]]
                 continue
@@ -249,29 +251,31 @@ async def scan_once():
                 print(f"Auto-buy failed {sig['symbol']}: {e}")
                 state["pending"] = [s for s in state["pending"] if s["symbol"] != sig["symbol"]]
 
-    except Exception as e: print(f"Scanner: {e}")
+    except Exception as e: print(f"Scanner error: {e}")
 
 async def analyse(symbol):
     try:
-        # ── FIX: hard block — never analyse if already in position or pending ──
         if symbol in state["positions"]: return
         if any(p["symbol"] == symbol for p in state["pending"]): return
 
-        mode = state["signal_mode"]; cfg = MODES[mode]; limit = cfg["ema_trend"] + 80
+        mode = state["signal_mode"]; cfg = MODES[mode]
+        limit = cfg["ema_trend"] + 80
         klines = await get_klines(symbol, "30", limit)
         if len(klines) < cfg["ema_trend"] + 30: return
+
         klines = list(reversed(klines))
         opens=[float(k[1]) for k in klines]; highs=[float(k[2]) for k in klines]
         lows=[float(k[3]) for k in klines]; closes=[float(k[4]) for k in klines]
         volumes=[float(k[5]) for k in klines]
+
         signal, details = primeflow_signal(opens, highs, lows, closes, volumes, mode)
+
         log = {"symbol":symbol,"signal":signal,"rsi":details.get("rsi",0),
                "vol":details.get("vol_ratio",0),"st":details.get("st_bull",False),
                "cross":details.get("cross_up",False),"mode":mode,"ts":int(time.time())}
         state["signal_log"] = ([log] + state["signal_log"])[:30]
-        if signal != "long": return
 
-        # ── FIX: final check before adding to pending ──
+        if signal != "long": return
         if symbol in state["positions"]: return
         if any(p["symbol"] == symbol for p in state["pending"]): return
 
@@ -279,13 +283,15 @@ async def analyse(symbol):
         tp1 = round(price + atr_val * state["tp_mult1"], 8)
         tp2 = round(price + atr_val * state["tp_mult2"], 8)
         sl  = round(price - atr_val * state["sl_mult"],  8)
-        sl_pct = (price - sl) / price * 100
+        sl_pct = (price - sl) / price * 100 if price > 0 else 99
         if sl_pct > 25: return
+
         state["pending"].append({"symbol":symbol,"price":price,"tp1":tp1,"tp2":tp2,
                                   "sl":sl,"atr":atr_val,"rsi":details.get("rsi",0),
                                   "vol":details.get("vol_ratio",0),"mode":mode,"ts":int(time.time())})
         state["stats"]["signals"] += 1
-        print(f"SIGNAL [{mode.upper()}]: {symbol} rsi={details.get('rsi')} vol={details.get('vol_ratio')}x")
+        print(f"SIGNAL [{mode.upper()}]: {symbol} rsi={details.get('rsi')} vol={details.get('vol_ratio')}x cross={details.get('cross_up')} st={details.get('st_bull')}")
+
     except Exception as e: print(f"Analyse {symbol}: {e}")
 
 async def get_symbol_precision(symbol):
@@ -306,19 +312,20 @@ async def place_limit_sell(symbol, qty, price, qty_dec, price_dec):
             "qty":qty_str,"price":price_str,"timeInForce":"GTC"}
     data = await by_post("/v5/order/create", body)
     if data.get("retCode") != 0:
-        print(f"Limit sell failed {symbol}: {data.get('retMsg')}"); return None
+        print(f"Limit sell failed {symbol}: {data.get('retMsg')} code={data.get('retCode')}"); return None
     print(f"Limit SELL placed {symbol} qty={qty_str} @ {price_str}")
     return data.get("result", {})
 
 async def execute_buy(symbol, usdt_amount, atr_val=0, entry_price=0):
-    # ── FIX: final guard inside execute_buy itself ──
     if symbol in state["positions"]: raise Exception("Already in position")
 
+    print(f"Attempting BUY: {symbol} usdt={usdt_amount}")
     buy_body = {"category":"spot","symbol":symbol,"side":"Buy","orderType":"Market",
                 "marketUnit":"quoteCoin","qty":str(round(usdt_amount,2)),"timeInForce":"IOC"}
     buy_data = await by_post("/v5/order/create", buy_body)
     if buy_data.get("retCode") != 0:
         raise Exception(buy_data.get("retMsg", f"Buy failed: {buy_data.get('retCode')}"))
+    print(f"BUY order placed: {symbol} — waiting for fill...")
 
     await asyncio.sleep(1.5)
     price = await get_price(symbol)
@@ -332,9 +339,12 @@ async def execute_buy(symbol, usdt_amount, atr_val=0, entry_price=0):
         if orders:
             fq = float(orders[0].get("cumExecQty", 0))
             if fq > 0: filled_qty = fq
-    except: pass
+            print(f"Filled qty from history: {filled_qty}")
+    except Exception as e:
+        print(f"Could not get fill history: {e}")
 
     qty_dec, price_dec = await get_symbol_precision(symbol)
+    print(f"Symbol precision: qty_dec={qty_dec} price_dec={price_dec}")
 
     if atr_val > 0:
         tp1 = price + atr_val * state["tp_mult1"]
@@ -350,9 +360,10 @@ async def execute_buy(symbol, usdt_amount, atr_val=0, entry_price=0):
 
     half_qty = round(filled_qty / 2, qty_dec)
     total_qty = round(filled_qty, qty_dec)
+    print(f"Placing TP orders: TP1={tp1} TP2={tp2} SL={sl} half_qty={half_qty}")
 
     tp1_order = await place_limit_sell(symbol, half_qty, tp1, qty_dec, price_dec)
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.5)
     tp2_order = await place_limit_sell(symbol, half_qty, tp2, qty_dec, price_dec)
 
     state["positions"][symbol] = {
@@ -365,7 +376,7 @@ async def execute_buy(symbol, usdt_amount, atr_val=0, entry_price=0):
     }
     state["stats"]["traded"] += 1
     state["balance"] = await get_balance()
-    print(f"BOUGHT {symbol} @ {price} | TP1={tp1} TP2={tp2} SL={sl} qty={total_qty}")
+    print(f"POSITION OPEN: {symbol} @ {price} | TP1={tp1} TP2={tp2} SL={sl} qty={total_qty}")
 
 async def update_positions():
     for sym in list(state["positions"]):
@@ -391,7 +402,7 @@ async def update_positions():
                 print(f"TP2 HIT: {sym} WIN @ {price}"); continue
 
             if price <= pos["sl"]:
-                print(f"SL HIT: {sym} @ {price} — market selling")
+                print(f"SL HIT: {sym} @ {price} — executing market sell")
                 await cancel_all_orders(sym); await asyncio.sleep(0.5)
                 qty_dec, _ = await get_symbol_precision(sym)
                 sell_body = {"category":"spot","symbol":sym,"side":"Sell","orderType":"Market",
@@ -407,27 +418,38 @@ async def update_positions():
         except Exception as e: print(f"Pos {sym}: {e}")
 
 async def bot_loop():
+    print("Bot loop started")
     while True:
         if state["bot_on"] and state["api_key"]:
-            await scan_once(); await update_positions()
+            await scan_once()
+            await update_positions()
             try: state["balance"] = await get_balance()
             except: pass
+        else:
+            print(f"Bot waiting — bot_on={state['bot_on']} api_key_set={bool(state['api_key'])}")
         await asyncio.sleep(30)
 
 @app.on_event("startup")
 async def startup():
+    print(f"Starting APEX Bot — API key loaded: {bool(state['api_key'])}")
     if state["api_key"]:
-        try: state["balance"] = await get_balance()
-        except: pass
+        try:
+            state["balance"] = await get_balance()
+            print(f"Balance loaded: ${state['balance']:.2f} USDT")
+        except Exception as e:
+            print(f"Balance load failed: {e}")
     asyncio.create_task(bot_loop())
 
 @app.post("/api/connect")
 async def connect(req: Request):
     b = await req.json()
-    state["api_key"]=b.get("api_key","").strip(); state["api_secret"]=b.get("api_secret","").strip()
-    state["risk_pct"]=float(b.get("risk_pct",5.0)); state["max_pos"]=int(b.get("max_pos",2))
-    state["signal_mode"]=b.get("signal_mode","lenient")
-    state["balance"] = await get_balance()
+    state["api_key"]     = b.get("api_key","").strip()
+    state["api_secret"]  = b.get("api_secret","").strip()
+    state["risk_pct"]    = float(b.get("risk_pct", 5.0))
+    state["max_pos"]     = int(b.get("max_pos", 2))
+    state["signal_mode"] = b.get("signal_mode", "lenient")
+    state["balance"]     = await get_balance()
+    print(f"Connected via UI — balance: ${state['balance']:.2f}")
     return {"ok": True, "balance": state["balance"]}
 
 @app.get("/api/status")
@@ -448,6 +470,7 @@ async def toggle(): state["bot_on"]=not state["bot_on"]; return {"bot_on":state[
 async def set_mode(mode: str):
     if mode not in MODES: return JSONResponse({"error":"Invalid mode"},400)
     state["signal_mode"]=mode; state["pending"]=[]
+    print(f"Mode changed to: {mode}")
     return {"ok":True,"mode":mode,"desc":MODES[mode]["desc"]}
 
 @app.post("/api/dismiss/{symbol}")
