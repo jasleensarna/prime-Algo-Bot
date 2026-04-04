@@ -82,7 +82,7 @@ TOP50 = [
 ]
 
 BYBIT = "https://api.bybit.com"
-MIN_ORDER = 12.0  # minimum USDT per trade
+MIN_ORDER = 10.0  # minimum USDT per trade
 
 # ── BYBIT API ─────────────────────────────────────────────────
 def by_sign(secret, timestamp, params):
@@ -294,6 +294,150 @@ async def get_5m_trend(symbol):
         return "neutral"
     except: return None
 
+# ── MARKET FILTERS: LIQUIDATIONS + OI + FUNDING ──────────────
+
+async def get_funding_rate(symbol):
+    """
+    Funding rate filter.
+    Positive funding = longs paying shorts = market overbought = avoid LONG
+    Negative funding = shorts paying longs = market oversold  = avoid SHORT
+    Returns: (rate_pct, bias)
+    bias = "long_heavy" | "short_heavy" | "neutral"
+    """
+    try:
+        data = await by_get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+        items = data.get("result", {}).get("list", [])
+        if not items: return 0, "neutral"
+        rate = float(items[0].get("fundingRate", 0)) * 100  # convert to %
+        if rate > 0.05:   return rate, "long_heavy"   # longs very dominant
+        if rate < -0.05:  return rate, "short_heavy"  # shorts very dominant
+        return rate, "neutral"
+    except: return 0, "neutral"
+
+async def get_oi_trend(symbol):
+    """
+    Open Interest trend.
+    Rising OI + rising price = genuine trend (good entry)
+    Falling OI + rising price = short covering rally (weak, avoid)
+    Returns: "rising" | "falling" | "neutral"
+    """
+    try:
+        data = await by_get("/v5/market/open-interest", {
+            "category": "linear", "symbol": symbol,
+            "intervalTime": "5min", "limit": 10
+        })
+        items = data.get("result", {}).get("list", [])
+        if len(items) < 4: return "neutral"
+        # Bybit returns newest first
+        recent = float(items[0].get("openInterest", 0))
+        older  = float(items[-1].get("openInterest", 0))
+        if older == 0: return "neutral"
+        change_pct = (recent - older) / older * 100
+        if change_pct > 1.0:  return "rising"
+        if change_pct < -1.0: return "falling"
+        return "neutral"
+    except: return "neutral"
+
+async def get_liquidation_bias(symbol):
+    """
+    Recent liquidation bias.
+    If longs are getting liquidated heavily → bearish pressure → avoid LONG
+    If shorts are getting liquidated heavily → bullish pressure → avoid SHORT
+    Uses Bybit's liquidation endpoint.
+    Returns: "longs_liq" | "shorts_liq" | "neutral"
+    """
+    try:
+        data = await by_get("/v5/market/liquidation", {
+            "category": "linear", "symbol": symbol, "limit": 50
+        })
+        items = data.get("result", {}).get("list", [])
+        if not items: return "neutral"
+        long_liq_val  = sum(float(i.get("size", 0)) * float(i.get("price", 0))
+                            for i in items if i.get("side") == "Buy")   # Buy liq = long liq
+        short_liq_val = sum(float(i.get("size", 0)) * float(i.get("price", 0))
+                            for i in items if i.get("side") == "Sell")  # Sell liq = short liq
+        total = long_liq_val + short_liq_val
+        if total == 0: return "neutral"
+        long_pct  = long_liq_val  / total * 100
+        short_pct = short_liq_val / total * 100
+        if long_pct  > 70: return "longs_liq"   # lots of longs getting rekt = bearish
+        if short_pct > 70: return "shorts_liq"  # lots of shorts getting rekt = bullish
+        return "neutral"
+    except: return "neutral"
+
+async def get_market_context(symbol):
+    """
+    Fetch all 3 market filters in parallel.
+    Returns dict with funding, OI trend, liquidation bias.
+    """
+    funding_rate, funding_bias, oi_trend, liq_bias = 0, "neutral", "neutral", "neutral"
+    try:
+        results = await asyncio.gather(
+            get_funding_rate(symbol),
+            get_oi_trend(symbol),
+            get_liquidation_bias(symbol),
+            return_exceptions=True
+        )
+        if not isinstance(results[0], Exception):
+            funding_rate, funding_bias = results[0]
+        if not isinstance(results[1], Exception):
+            oi_trend = results[1]
+        if not isinstance(results[2], Exception):
+            liq_bias = results[2]
+    except: pass
+
+    return {
+        "funding_rate":  round(funding_rate, 4),
+        "funding_bias":  funding_bias,
+        "oi_trend":      oi_trend,
+        "liq_bias":      liq_bias,
+    }
+
+def market_context_allows(signal, ctx):
+    """
+    Apply market context filters to a signal.
+    Returns (allowed: bool, reason: str)
+
+    LONG filters:
+    - Block if funding too positive (market overbought — longs crowded)
+    - Block if OI falling (weak rally, short covering only)
+    - Allow if shorts getting liquidated (bullish pressure)
+
+    SHORT filters:
+    - Block if funding too negative (market oversold — shorts crowded)
+    - Block if OI falling (weak move)
+    - Allow if longs getting liquidated (bearish pressure)
+    """
+    funding_bias = ctx.get("funding_bias", "neutral")
+    oi_trend     = ctx.get("oi_trend",     "neutral")
+    liq_bias     = ctx.get("liq_bias",     "neutral")
+
+    if signal == "long":
+        # Block if longs already crowded (funding too high)
+        if funding_bias == "long_heavy":
+            return False, f"funding={ctx['funding_rate']:.3f}% (longs crowded)"
+        # Block if OI falling + no short liquidations (weak rally)
+        if oi_trend == "falling" and liq_bias != "shorts_liq":
+            return False, "OI falling — weak rally, likely short covering"
+        # Boost confidence if shorts getting liquidated
+        if liq_bias == "shorts_liq":
+            return True, "shorts_liq ✅ — strong bullish pressure"
+        return True, f"OI={oi_trend} funding={ctx['funding_rate']:.3f}%"
+
+    if signal == "short":
+        # Block if shorts already crowded (funding too negative)
+        if funding_bias == "short_heavy":
+            return False, f"funding={ctx['funding_rate']:.3f}% (shorts crowded)"
+        # Block if OI falling + no long liquidations
+        if oi_trend == "falling" and liq_bias != "longs_liq":
+            return False, "OI falling — weak drop, likely long covering"
+        # Boost confidence if longs getting liquidated
+        if liq_bias == "longs_liq":
+            return True, "longs_liq ✅ — strong bearish pressure"
+        return True, f"OI={oi_trend} funding={ctx['funding_rate']:.3f}%"
+
+    return True, "no filter"
+
 # ── SCANNER ───────────────────────────────────────────────────
 async def scan_once():
     if state["daily_loss_hit"]:
@@ -358,12 +502,21 @@ async def analyse(symbol):
         if symbol in state["positions"]: return
         if any(p["symbol"] == symbol for p in state["pending"]): return
 
-        # Multi-timeframe confirmation
+        # ── Filter 1: Multi-timeframe confirmation ──
         if state["use_mtf"]:
             trend_5m = await get_5m_trend(symbol)
-            if signal == "long"  and trend_5m == "bear": return
-            if signal == "short" and trend_5m == "bull": return
+            if signal == "long"  and trend_5m == "bear":
+                print(f"MTF BLOCK {symbol}: 5m bearish vs 30m long signal"); return
+            if signal == "short" and trend_5m == "bull":
+                print(f"MTF BLOCK {symbol}: 5m bullish vs 30m short signal"); return
             print(f"MTF OK: {symbol} 5m={trend_5m} 30m={signal}")
+
+        # ── Filter 2: Market context (Funding + OI + Liquidations) ──
+        ctx = await get_market_context(symbol)
+        allowed, reason = market_context_allows(signal, ctx)
+        if not allowed:
+            print(f"MARKET BLOCK {symbol} [{signal}]: {reason}"); return
+        print(f"MARKET OK {symbol} [{signal}]: {reason} | OI={ctx['oi_trend']} liq={ctx['liq_bias']}")
 
         atr_val = details.get("atr", 0)
         price   = closes[-1]
@@ -372,14 +525,22 @@ async def analyse(symbol):
         sl      = round(price - atr_val * 1.2, 6) if signal == "long" else round(price + atr_val * 1.2, 6)
 
         state["pending"].append({
-            "symbol": symbol, "direction": signal,
-            "price": price, "tp1": tp1, "tp2": tp2, "sl": sl,
-            "atr": atr_val, "rsi": details.get("rsi", 0),
-            "vol": details.get("vol_ratio", 0), "mode": mode,
-            "ts": int(time.time()),
+            "symbol":    symbol,
+            "direction": signal,
+            "price":     price,
+            "tp1": tp1, "tp2": tp2, "sl": sl,
+            "atr":       atr_val,
+            "rsi":       details.get("rsi", 0),
+            "vol":       details.get("vol_ratio", 0),
+            "funding":   ctx.get("funding_rate", 0),
+            "oi":        ctx.get("oi_trend", "neutral"),
+            "liq":       ctx.get("liq_bias", "neutral"),
+            "mode":      mode,
+            "ts":        int(time.time()),
         })
         state["stats"]["signals"] += 1
-        print(f"SIGNAL [{mode.upper()}] {signal.upper()}: {symbol} rsi={details.get('rsi')} vol={details.get('vol_ratio')}x")
+        print(f"SIGNAL [{mode.upper()}] {signal.upper()}: {symbol} rsi={details.get('rsi')} "
+              f"funding={ctx['funding_rate']:.3f}% OI={ctx['oi_trend']} liq={ctx['liq_bias']}")
 
     except Exception as e:
         print(f"Analyse {symbol}: {e}")
@@ -625,6 +786,12 @@ async def get_status():
         "losses":         state["losses"],
         "win_rate":       round(state["wins"] / t * 100) if t else 0,
         "signal_log":     state["signal_log"][:10],
+        "filters": {
+            "mtf":      "ON" if state["use_mtf"] else "OFF",
+            "funding":  "active",
+            "oi":       "active",
+            "liq":      "active",
+        }
     }
 
 @app.post("/api/bot/toggle")
