@@ -20,8 +20,6 @@
 html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-size:14px;min-height:100vh;overscroll-behavior:none}
 .scr{display:none;min-height:100vh;flex-direction:column}
 .scr.on{display:flex}
-
-/* SETUP */
 .s-hero{background:linear-gradient(170deg,#2a1a08 0%,#1a1008 100%);padding:52px 24px 40px;text-align:center;position:relative;overflow:hidden}
 .s-hero::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:radial-gradient(ellipse at 50% 0%,rgba(212,168,67,0.18) 0%,transparent 65%)}
 .s-hero::after{content:'';position:absolute;bottom:-1px;left:0;right:0;height:28px;background:var(--cream);border-radius:28px 28px 0 0}
@@ -50,8 +48,6 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .go:active{transform:scale(0.98)}
 .go:disabled{opacity:0.6;pointer-events:none}
 .fine{font-size:11px;color:var(--text2);text-align:center;line-height:1.5}
-
-/* APP */
 .topbar{background:#fff;border-bottom:1px solid var(--border);padding:12px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;box-shadow:0 1px 6px rgba(80,50,20,0.05)}
 .logo{font-family:var(--fh);font-size:20px;color:var(--deep)}
 .logo span{color:var(--gold2)}
@@ -65,11 +61,8 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .bal-a{font-family:var(--fm);font-size:15px;font-weight:500;color:var(--deep)}
 .bal-l{font-size:10px;color:var(--text2)}
 .gear{width:34px;height:34px;background:var(--warm);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer}
-
 .content{flex:1;overflow-y:auto;padding-bottom:80px}
 .content::-webkit-scrollbar{display:none}
-
-/* PNL hero */
 .ph{margin:16px;background:linear-gradient(145deg,#2a1a08 0%,#180f05 100%);border-radius:22px;padding:22px;position:relative;overflow:hidden;box-shadow:var(--sh-lg)}
 .ph::before{content:'';position:absolute;top:-50px;right:-50px;width:200px;height:200px;background:radial-gradient(circle,rgba(212,168,67,0.12) 0%,transparent 70%)}
 .ph-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;position:relative;z-index:1}
@@ -83,17 +76,11 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .phs-l{font-size:10px;color:rgba(255,255,255,0.3);margin-bottom:3px}
 .phs-v{font-family:var(--fm);font-size:14px;color:#fff;font-weight:500}
 .phs-v.gold{color:#f0d070}
-
-/* Section */
 .sec{margin:20px 16px 0}
 .sch{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .sct{font-family:var(--fh);font-size:17px;color:var(--deep)}
 .scs{font-size:12px;color:var(--gold);font-weight:600}
-
-/* Auto badge */
 .ab{display:inline-flex;align-items:center;gap:5px;background:linear-gradient(135deg,#b8902a,#d4a843);color:#1a1008;font-family:var(--fm);font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 10px;border-radius:6px}
-
-/* Scanner */
 .sc-crd{background:#fff;border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:var(--sh)}
 .sc-top{display:flex;align-items:center;gap:8px;margin-bottom:14px}
 .sc-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(30,107,62,0.4);animation:pulse 1s ease infinite}
@@ -101,8 +88,18 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .sg{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
 .sg-l{font-size:10px;color:var(--text2);margin-bottom:2px}
 .sg-v{font-family:var(--fm);font-size:16px;font-weight:700;color:var(--deep)}
-
-/* Signal */
+.mode-wrap{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px}
+.mode-btn{padding:12px 6px;border-radius:12px;text-align:center;cursor:pointer;border:1.5px solid var(--border);background:var(--warm);transition:all 0.2s}
+.mode-btn.on.lenient{background:#e8f5ee;border-color:rgba(30,107,62,0.4)}
+.mode-btn.on.medium{background:#fff7e6;border-color:rgba(184,144,42,0.4)}
+.mode-btn.on.strict{background:#fdecea;border-color:rgba(184,50,50,0.4)}
+.mode-icon{font-size:20px;margin-bottom:4px}
+.mode-name{font-family:var(--fh);font-size:13px;color:var(--deep);margin-bottom:2px;font-weight:600}
+.mode-btn.on.lenient .mode-name{color:var(--green)}
+.mode-btn.on.medium .mode-name{color:var(--gold)}
+.mode-btn.on.strict .mode-name{color:var(--red)}
+.mode-sub{font-size:10px;color:var(--text2);line-height:1.4}
+.mode-desc-bar{background:var(--warm);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:4px}
 .sig{background:#fff;border:1.5px solid var(--gold2);border-radius:18px;padding:16px;margin-bottom:10px;box-shadow:0 4px 20px rgba(184,144,42,0.12);animation:su 0.35s ease;position:relative;overflow:hidden}
 .sig::before{content:'AUTO-BUYING';position:absolute;top:12px;right:12px;background:linear-gradient(135deg,#b8902a,#d4a843);color:#1a1008;font-family:var(--fm);font-size:9px;font-weight:700;letter-spacing:1px;padding:3px 8px;border-radius:5px}
 @keyframes su{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -121,8 +118,6 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .conf-tr{height:6px;background:var(--warm);border-radius:3px;overflow:hidden}
 .conf-fi{height:100%;background:linear-gradient(90deg,var(--gold),var(--gold2));border-radius:3px}
 .sig-inf{font-family:var(--fm);font-size:11px;color:var(--text2);line-height:1.6}
-
-/* Position */
 .pos-c{background:#fff;border:1px solid var(--border);border-radius:18px;padding:16px;margin-bottom:10px;box-shadow:var(--sh)}
 .pc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
 .pc-co{display:flex;align-items:center;gap:10px}
@@ -142,8 +137,6 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .tp-ti{display:flex;justify-content:space-between;margin-top:5px;font-family:var(--fm);font-size:9px;color:var(--text2)}
 .cl-btn{width:100%;padding:11px;background:#fff;border:1.5px solid #f0c8c0;border-radius:10px;font-size:13px;font-weight:600;color:var(--red);cursor:pointer;transition:all 0.15s}
 .cl-btn:active{background:var(--red-l)}
-
-/* Trade log */
 .tr-row{display:flex;align-items:center;gap:12px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:14px;margin-bottom:8px;box-shadow:var(--sh)}
 .tr-ic{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
 .tr-ic.w{background:var(--green-l)}
@@ -156,19 +149,14 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .tr-pv.w{color:var(--green)}
 .tr-pv.l{color:var(--red)}
 .tr-tm{font-size:10px;color:var(--text2);margin-top:2px}
-
-/* Bottom nav */
 .bnav{position:fixed;bottom:0;left:0;right:0;background:rgba(255,255,255,0.96);border-top:1px solid var(--border);display:flex;padding:8px 0 max(env(safe-area-inset-bottom),10px);backdrop-filter:blur(16px);box-shadow:0 -4px 16px rgba(80,50,20,0.06);z-index:50}
 .bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 0;cursor:pointer}
 .bn-i{font-size:22px;line-height:1;transition:transform 0.2s}
 .bn-l{font-size:10px;color:var(--text2);font-weight:600;letter-spacing:0.3px}
 .bn.on .bn-l{color:var(--gold)}
 .bn.on .bn-i{transform:scale(1.1);filter:drop-shadow(0 2px 4px rgba(184,144,42,0.35))}
-
 .page{display:none}
 .page.on{display:block}
-
-/* Scanner page */
 .str-c{background:#fff;border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:8px;box-shadow:var(--sh);display:flex;gap:12px}
 .str-i{font-size:22px;margin-top:1px}
 .str-n{font-weight:700;color:var(--deep);font-size:13px;margin-bottom:3px}
@@ -181,8 +169,6 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .fl-s{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);font-size:12px;color:rgba(255,255,255,0.55);line-height:1.5}
 .fl-s:last-child{border:none}
 .fl-n{font-family:var(--fm);font-size:11px;color:var(--gold2);font-weight:700;width:16px;flex-shrink:0;margin-top:1px}
-
-/* Analytics */
 .pg{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
 .pb{background:#fff;border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--sh)}
 .pb-l{font-size:11px;color:var(--text2);margin-bottom:5px}
@@ -190,8 +176,6 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .pb-v.gold{color:var(--gold)}
 .pb-v.green{color:var(--green)}
 .pb-s{font-size:11px;color:var(--text2);margin-top:4px}
-
-/* Sheet */
 #sheet{display:none;position:fixed;inset:0;background:rgba(30,20,10,0.55);z-index:200;backdrop-filter:blur(6px)}
 .sh-in{position:absolute;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--border);border-radius:26px 26px 0 0;padding:20px 20px max(env(safe-area-inset-bottom),24px);max-height:80vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(80,50,20,0.12)}
 .sh-h{width:36px;height:4px;background:var(--border);border-radius:2px;margin:0 auto 20px}
@@ -205,37 +189,12 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
 .sw.on{background:var(--green)}
 .sw::after{content:'';position:absolute;top:3px;left:3px;width:21px;height:21px;background:#fff;border-radius:50%;transition:left 0.25s;box-shadow:0 1px 4px rgba(0,0,0,0.1)}
 .sw.on::after{left:22px}
-
 #toast{position:fixed;top:72px;left:50%;transform:translateX(-50%) translateY(-8px);background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px 20px;font-size:13px;font-weight:600;color:var(--deep);z-index:300;opacity:0;pointer-events:none;transition:all 0.25s;white-space:nowrap;box-shadow:var(--sh-lg)}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 #toast.g{border-color:rgba(30,107,62,0.3);color:var(--green)}
 #toast.y{border-color:rgba(184,144,42,0.4);color:var(--gold)}
 #toast.r{border-color:rgba(184,50,50,0.3);color:var(--red)}
 .empty{text-align:center;padding:32px 0;color:var(--text2);font-size:13px;line-height:1.7}
-
-/* Signal mode buttons */
-.mode-wrap { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:4px; }
-.mode-btn {
-  padding:12px 6px; border-radius:12px; text-align:center; cursor:pointer;
-  border:1.5px solid var(--border); background:var(--warm);
-  transition:all 0.2s;
-}
-.mode-btn.on.lenient { background:#e8f5ee; border-color:rgba(30,107,62,0.4); }
-.mode-btn.on.medium  { background:#fff7e6; border-color:rgba(184,144,42,0.4); }
-.mode-btn.on.strict  { background:#fdecea; border-color:rgba(184,50,50,0.4); }
-.mode-icon { font-size:20px; margin-bottom:4px; }
-.mode-name { font-family:var(--fh); font-size:13px; color:var(--deep); margin-bottom:2px; font-weight:600; }
-.mode-btn.on.lenient .mode-name { color:var(--green); }
-.mode-btn.on.medium  .mode-name { color:var(--gold); }
-.mode-btn.on.strict  .mode-name { color:var(--red); }
-.mode-sub  { font-size:10px; color:var(--text2); line-height:1.4; }
-.mode-desc-bar {
-  background:var(--warm); border:1px solid var(--border);
-  border-radius:10px; padding:10px 12px;
-  font-size:11px; color:var(--text2); line-height:1.5;
-  margin-bottom:4px;
-}
-
 </style>
 </head>
 <body>
@@ -255,46 +214,28 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
       <span class="lbl">Secret Key</span>
       <input class="inp" id="iSec" type="password" placeholder="Paste your Secret Key" autocomplete="off">
     </div>
-
-    <div class="warn">🔒 <span>Keys go only to your own Railway server — never stored or shared.</span></div>
-
-    <div class="crd">
-      <div class="crd-t">⚡ Fully Automatic Mode</div>
-      <div class="crd-s">Bot detects signals and places real trades on Bybit with no approval needed.</div>
-      <div style="background:linear-gradient(135deg,#2a1a08,#180f05);border-radius:14px;padding:16px;display:flex;gap:12px;align-items:flex-start">
-        <div style="font-size:22px;margin-top:2px">🤖</div>
-        <div style="font-size:12px;color:rgba(255,255,255,0.65);line-height:1.9">
-          Signal detected → <span style="color:#f0d070">Real BUY placed on Bybit</span><br>
-          TP1 +30% → <span style="color:#f0d070">50% sold automatically</span><br>
-          TP2 +70% → <span style="color:#f0d070">Remaining 50% sold</span><br>
-          SL −15% → <span style="color:#ff8070">Protected exit if needed</span>
-        </div>
-      </div>
-    </div>
-
+    <div class="warn">🔒 <span>Keys saved only in your browser — never shared anywhere.</span></div>
     <div class="crd">
       <div class="crd-t">💰 Risk Per Trade</div>
       <div class="crd-s">% of Bybit Spot USDT balance used per entry</div>
       <div class="rg">
         <div class="rc" onclick="setR(this,'1')"><div class="rc-n">1%</div><div class="rc-l">Safe</div></div>
-        <div class="rc on" onclick="setR(this,'2.5')"><div class="rc-n">2.5%</div><div class="rc-l">Medium ✓</div></div>
-        <div class="rc" onclick="setR(this,'5')"><div class="rc-n">5%</div><div class="rc-l">Bold</div></div>
+        <div class="rc" onclick="setR(this,'2.5')"><div class="rc-n">2.5%</div><div class="rc-l">Low</div></div>
+        <div class="rc on" onclick="setR(this,'5')"><div class="rc-n">5%</div><div class="rc-l">Medium ✓</div></div>
         <div class="rc" onclick="setR(this,'10')"><div class="rc-n">10%</div><div class="rc-l">High</div></div>
       </div>
     </div>
-
     <div class="crd">
       <div class="crd-t">🎯 TP & Stop Loss</div>
-      <div class="crd-s">Optimised for meme coin volatility — adjust if needed</div>
+      <div class="crd-s">ATR-based from PrimeFlow — adjust if needed</div>
       <div class="tpg">
         <div><span class="lbl">TP1 (%)</span><input class="inp" id="itp1" type="number" value="30"></div>
         <div><span class="lbl">TP2 (%)</span><input class="inp" id="itp2" type="number" value="70"></div>
         <div><span class="lbl">SL (%)</span><input class="inp" id="isl" type="number" value="15"></div>
       </div>
     </div>
-
     <button class="go" id="launchBtn" onclick="connect()">🚀 Connect Bybit & Start Bot</button>
-    <div class="fine">⚠️ Real money · Real risk · Meme coins are highly volatile. Only use funds you can afford to lose entirely.</div>
+    <div class="fine">⚠️ Real money · Real risk · Only use funds you can afford to lose entirely.</div>
   </div>
 </div>
 
@@ -317,65 +258,46 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
     <div class="page on" id="pg-home">
       <div class="ph">
         <div class="ph-top">
-          <div>
-            <div class="ph-lbl">TODAY'S P&L</div>
-            <div class="ph-val" id="todayPnl">$0.00</div>
-          </div>
-          <div>
-            <div class="pv-lbl">PORTFOLIO</div>
-            <div class="pv-val" id="portVal">$—</div>
-          </div>
+          <div><div class="ph-lbl">TODAY'S P&L</div><div class="ph-val" id="todayPnl">$0.00</div></div>
+          <div><div class="pv-lbl">PORTFOLIO</div><div class="pv-val" id="portVal">$—</div></div>
         </div>
         <div class="ph-stats">
           <div><div class="phs-l">Win Rate</div><div class="phs-v gold" id="wr">—</div></div>
           <div><div class="phs-l">Total Trades</div><div class="phs-v" id="tradesN">0</div></div>
-          <div><div class="phs-l">Open</div><div class="phs-v" id="openN">0/3</div></div>
+          <div><div class="phs-l">Open</div><div class="phs-v" id="openN">0/2</div></div>
         </div>
       </div>
 
       <div class="sec">
-        <div class="sch">
-          <div class="sct">Scanner</div>
-          <div class="ab">⚡ FULLY AUTO</div>
-        </div>
+        <div class="sch"><div class="sct">Scanner</div><div class="ab">⚡ FULLY AUTO</div></div>
         <div class="sc-crd">
           <div class="sc-top"><div class="sc-dot"></div><div class="sc-txt">LIVE · BYBIT SPOT · EVERY 30s</div></div>
           <div class="sg">
             <div><div class="sg-l">Scanned</div><div class="sg-v" id="sScanned">0</div></div>
             <div><div class="sg-l">New Coins</div><div class="sg-v" id="sNew">0</div></div>
             <div><div class="sg-l">Signals</div><div class="sg-v" id="sSig">0</div></div>
-            <div><div class="sg-l">Auto-Traded</div><div class="sg-v" id="sTraded">0</div></div>
+            <div><div class="sg-l">Traded</div><div class="sg-v" id="sTraded">0</div></div>
           </div>
         </div>
       </div>
 
-
-      <!-- Signal Mode -->
       <div class="sec">
-        <div class="sch">
-          <div class="sct">Signal Mode</div>
-          <div class="scs" id="modeLbl">LENIENT</div>
-        </div>
+        <div class="sch"><div class="sct">Signal Mode</div><div class="scs" id="modeLbl">LENIENT</div></div>
         <div class="mode-wrap">
           <div class="mode-btn lenient on" id="btn-lenient" onclick="setMode('lenient')">
-            <div class="mode-icon">🟢</div>
-            <div class="mode-name">Lenient</div>
+            <div class="mode-icon">🟢</div><div class="mode-name">Lenient</div>
             <div class="mode-sub">More signals<br>Higher activity</div>
           </div>
           <div class="mode-btn medium" id="btn-medium" onclick="setMode('medium')">
-            <div class="mode-icon">🟡</div>
-            <div class="mode-name">Medium</div>
+            <div class="mode-icon">🟡</div><div class="mode-name">Medium</div>
             <div class="mode-sub">Balanced<br>Recommended</div>
           </div>
           <div class="mode-btn strict" id="btn-strict" onclick="setMode('strict')">
-            <div class="mode-icon">🔴</div>
-            <div class="mode-name">Strict</div>
+            <div class="mode-icon">🔴</div><div class="mode-name">Strict</div>
             <div class="mode-sub">Fewer signals<br>Lower risk</div>
           </div>
         </div>
-        <div class="mode-desc-bar" id="modeDescBar">
-          🟢 Lenient — EMA9/21/50 · Supertrend · RSI &lt; 75 · More trading opportunities
-        </div>
+        <div class="mode-desc-bar" id="modeDescBar">🟢 Lenient — EMA9/21/50 · Supertrend · RSI &lt; 75 · More opportunities</div>
       </div>
 
       <div class="sec" id="sigSec" style="display:none">
@@ -384,11 +306,8 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
       </div>
 
       <div class="sec">
-        <div class="sch">
-          <div class="sct">Open Positions</div>
-          <div class="scs" id="posLbl">0 active</div>
-        </div>
-        <div id="posList"><div class="empty">No open positions yet.<br>Bot is scanning Bybit for new listings…</div></div>
+        <div class="sch"><div class="sct">Open Positions</div><div class="scs" id="posLbl">0 active</div></div>
+        <div id="posList"><div class="empty">No open positions yet.<br>Bot is scanning Bybit for signals…</div></div>
       </div>
 
       <div class="sec">
@@ -409,17 +328,17 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
             <div><div class="sg-l">Traded</div><div class="sg-v" id="tr2">—</div></div>
           </div>
         </div>
-        <div class="str-c"><div class="str-i">📦</div><div><div class="str-n">Volume Spike <span class="sbg r">REQUIRED</span></div><div class="str-d">Volume 3× the 20-candle average — flags sudden buying on a new listing.</div></div></div>
-        <div class="str-c"><div class="str-i">📈</div><div><div class="str-n">RSI Momentum <span class="sbg r">REQUIRED</span></div><div class="str-d">RSI(14) above 55 on 30m — buyers in control, not yet overbought.</div></div></div>
-        <div class="str-c"><div class="str-i">🕯</div><div><div class="str-n">Price Breakout <span class="sbg f">FILTER</span></div><div class="str-d">Price breaks 5-candle high — entry on confirmed momentum only.</div></div></div>
-        <div class="str-c"><div class="str-i">⏱</div><div><div class="str-n">New Listing Only <span class="sbg f">FILTER</span></div><div class="str-d">Only newly detected Bybit Spot coins — early price discovery phase.</div></div></div>
+        <div class="str-c"><div class="str-i">📊</div><div><div class="str-n">EMA Crossover <span class="sbg r">REQUIRED</span></div><div class="str-d">Fast EMA crosses above Slow EMA — momentum shift signal.</div></div></div>
+        <div class="str-c"><div class="str-i">🔁</div><div><div class="str-n">Supertrend Bullish <span class="sbg r">REQUIRED</span></div><div class="str-d">Supertrend must be bullish — confirms uptrend direction.</div></div></div>
+        <div class="str-c"><div class="str-i">📈</div><div><div class="str-n">RSI Filter <span class="sbg r">REQUIRED</span></div><div class="str-d">RSI not overbought — avoids buying into exhausted moves.</div></div></div>
+        <div class="str-c"><div class="str-i">📦</div><div><div class="str-n">MACD + Volume <span class="sbg f">MEDIUM/STRICT</span></div><div class="str-d">MACD bullish + Volume spike — extra confirmation filters.</div></div></div>
         <div class="fl-c">
           <div class="fl-t">Auto Execution Flow</div>
           <div class="fl-s"><div class="fl-n">1</div>Signal fires → Real market BUY on Bybit instantly</div>
-          <div class="fl-s"><div class="fl-n">2</div>TP1 limit sell placed for 50% of position</div>
-          <div class="fl-s"><div class="fl-n">3</div>After TP1 hit → SL moves to entry price (breakeven)</div>
+          <div class="fl-s"><div class="fl-n">2</div>TP1 limit sell placed for 50% of position on Bybit</div>
+          <div class="fl-s"><div class="fl-n">3</div>After TP1 hit → SL moves to entry (breakeven protected)</div>
           <div class="fl-s"><div class="fl-n">4</div>TP2 limit sell placed for remaining 50%</div>
-          <div class="fl-s"><div class="fl-n">5</div>Hard stop loss at −15% if TP1 never reached</div>
+          <div class="fl-s"><div class="fl-n">5</div>Bot monitors SL every 30s — market sells if hit</div>
           <div class="fl-s"><div class="fl-n">6</div>Balance & P&L update live from Bybit</div>
         </div>
       </div>
@@ -452,186 +371,203 @@ html,body{background:var(--cream);color:var(--text);font-family:var(--fn);font-s
     <div class="sh-h"></div>
     <div class="sh-t">Settings</div>
     <div class="sr"><div><div class="sr-n">Auto-Trading</div><div class="sr-d">Bot places trades automatically</div></div><div class="sw on" id="botSw" onclick="toggleBot()"></div></div>
-    <div class="sr"><div><div class="sr-n">Risk Per Trade</div><div class="sr-d">% of Bybit balance per entry</div></div><div class="sr-v" id="sRisk">2.5%</div></div>
-    <div class="sr"><div><div class="sr-n">TP1 / TP2</div><div class="sr-d">Take profit targets</div></div><div class="sr-v" id="sTp">+30% / +70%</div></div>
-    <div class="sr"><div><div class="sr-n">Stop Loss</div><div class="sr-d">Hard exit per trade</div></div><div class="sr-v" id="sSl" style="color:var(--red)">−15%</div></div>
-    <div class="sr"><div><div class="sr-n">Trailing SL</div><div class="sr-d">Moves to breakeven after TP1</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+    <div class="sr"><div><div class="sr-n">Risk Per Trade</div><div class="sr-d">% of Bybit balance per entry</div></div><div class="sr-v" id="sRisk">5%</div></div>
+    <div class="sr"><div><div class="sr-n">Min Order Size</div><div class="sr-d">$12 min so TP orders clear Bybit limit</div></div><div class="sr-v">$12</div></div>
     <div class="sr"><div><div class="sr-n">Bybit API</div><div class="sr-d">Connected — live trading active</div></div><div style="color:var(--green);font-size:13px;font-weight:700">✓ Live</div></div>
-    <div class="sr"><div><div class="sr-n" style="color:var(--red)">Disconnect</div><div class="sr-d">Clear keys and reset</div></div><div style="cursor:pointer;font-size:20px" onclick="if(confirm('Reset everything?'))location.reload()">🗑</div></div>
+    <div class="sr"><div><div class="sr-n" style="color:var(--red)">Disconnect</div><div class="sr-d">Clear saved keys and reset</div></div><div style="cursor:pointer;font-size:20px" onclick="if(confirm('Reset everything?')){localStorage.clear();location.reload()}">🗑</div></div>
   </div>
 </div>
 
 <div id="toast"></div>
 
 <script>
-const API=window.location.origin;
-let cfg={risk_pct:2.5,tp1:30,tp2:70,sl:15};
-let selectedRisk=2.5,startBal=0,pollTimer=null;
+const API = window.location.origin;
+let cfg = {risk_pct:5.0, tp1:30, tp2:70, sl:15};
+let selectedRisk = 5.0, startBal = 0, pollTimer = null;
 
-function setR(el,v){document.querySelectorAll('.rc').forEach(b=>b.classList.remove('on'));el.classList.add('on');selectedRisk=parseFloat(v);}
+function setR(el, v) {
+  document.querySelectorAll('.rc').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on'); selectedRisk = parseFloat(v);
+}
 
-async function connect(){
-  const key=document.getElementById('iKey').value.trim();
-  const sec=document.getElementById('iSec').value.trim();
-  if(!key||!sec){toast('Enter your Bybit API keys first','y');return;}
-  const btn=document.getElementById('launchBtn');
-  btn.disabled=true;btn.textContent='Connecting to Bybit…';
-  cfg={api_key:key,api_secret:sec,risk_pct:selectedRisk,tp1:parseFloat(document.getElementById('itp1').value)||30,tp2:parseFloat(document.getElementById('itp2').value)||70,sl:parseFloat(document.getElementById('isl').value)||15,max_pos:3};
-  try{
-    const res=await fetch(`${API}/api/connect`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-    const d=await res.json();
-    if(!d.ok)throw new Error(d.error||'Connection failed');
-    startBal=d.balance;
-    document.getElementById('sRisk').textContent=cfg.risk_pct+'%';
-    document.getElementById('sTp').textContent=`+${cfg.tp1}% / +${cfg.tp2}%`;
-    document.getElementById('sSl').textContent=`−${cfg.sl}%`;
+// ── AUTO-CONNECT on page load if keys saved ──
+window.addEventListener('load', async () => {
+  const k = localStorage.getItem('apex_key');
+  const s = localStorage.getItem('apex_sec');
+  if (k && s) {
+    document.getElementById('iKey').value = k;
+    document.getElementById('iSec').value = s;
+    const r = localStorage.getItem('apex_risk');
+    if (r) selectedRisk = parseFloat(r);
+    await connect(true); // silent — skip toast and button state
+  }
+});
+
+async function connect(silent=false) {
+  const key = document.getElementById('iKey').value.trim();
+  const sec = document.getElementById('iSec').value.trim();
+  if (!key || !sec) { if(!silent) toast('Enter your Bybit API keys first','y'); return; }
+  const btn = document.getElementById('launchBtn');
+  if (!silent) { btn.disabled=true; btn.textContent='Connecting to Bybit…'; }
+  cfg = {api_key:key, api_secret:sec, risk_pct:selectedRisk,
+         tp1:parseFloat(document.getElementById('itp1').value)||30,
+         tp2:parseFloat(document.getElementById('itp2').value)||70,
+         sl:parseFloat(document.getElementById('isl').value)||15, max_pos:2};
+  try {
+    const res = await fetch(`${API}/api/connect`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || 'Connection failed');
+
+    // Save keys to browser so refresh auto-connects
+    localStorage.setItem('apex_key', key);
+    localStorage.setItem('apex_sec', sec);
+    localStorage.setItem('apex_risk', String(selectedRisk));
+
+    startBal = d.balance;
+    document.getElementById('sRisk').textContent = cfg.risk_pct+'%';
     document.getElementById('s-setup').classList.remove('on');
     document.getElementById('s-app').classList.add('on');
-    toast(`✅ Bybit connected! Balance: $${d.balance.toFixed(2)}`,'g');
+    if (!silent) toast(`✅ Connected! Balance: $${d.balance.toFixed(2)}`,'g');
     startPolling();
-  }catch(e){toast('❌ '+e.message,'r');btn.disabled=false;btn.textContent='🚀 Connect Bybit & Start Bot';}
+  } catch(e) {
+    if (!silent) {
+      toast('❌ '+e.message,'r');
+      btn.disabled=false; btn.textContent='🚀 Connect Bybit & Start Bot';
+    }
+  }
 }
 
-function startPolling(){poll();pollTimer=setInterval(poll,5000);}
+function startPolling() { poll(); pollTimer = setInterval(poll, 5000); }
 
-async function poll(){
-  try{const res=await fetch(`${API}/api/status`);if(!res.ok)return;render(await res.json());}catch(e){console.warn(e);}
+async function poll() {
+  try { const res=await fetch(`${API}/api/status`); if(!res.ok)return; render(await res.json()); }
+  catch(e) { console.warn(e); }
 }
 
-function render(d){
-  const bal=d.balance||0;
-  document.getElementById('balAmt').textContent='$'+bal.toFixed(2);
-  const tp=d.today_pnl||0;
-  const pe=document.getElementById('todayPnl');
-  pe.textContent=(tp>=0?'+$':'-$')+Math.abs(tp).toFixed(2);
-  pe.className='ph-val '+(tp>0?'pos':tp<0?'neg':'');
-  const ov=(d.positions||[]).reduce((a,p)=>a+(p.usdt_size||0)+(p.pnl||0),0);
-  document.getElementById('portVal').textContent='$'+(bal+ov).toFixed(2);
-  const tot=(d.wins||0)+(d.losses||0);
-  const wr=tot?Math.round(d.wins/tot*100)+'%':'—';
-  document.getElementById('wr').textContent=wr;
-  document.getElementById('tradesN').textContent=tot;
-  document.getElementById('openN').textContent=(d.positions||[]).length+'/3';
-  document.getElementById('posLbl').textContent=(d.positions||[]).length+' active';
-  const sc=d.stats||{};
-  [['sScanned',sc.scanned],['sNew',sc.new],['sSig',sc.signals],['sTraded',sc.traded],['sc2',sc.scanned],['nc2',sc.new],['sg2',sc.signals],['tr2',sc.traded]].forEach(([id,v])=>{const el=document.getElementById(id);if(el)el.textContent=v||0;});
-  renderSignals(d.pending||[]);renderPositions(d.positions||[]);renderTrades(d.trades||[]);renderAnalytics(d);
+function render(d) {
+  const bal = d.balance||0;
+  document.getElementById('balAmt').textContent = '$'+bal.toFixed(2);
+  const tp = d.today_pnl||0;
+  const pe = document.getElementById('todayPnl');
+  pe.textContent = (tp>=0?'+$':'-$')+Math.abs(tp).toFixed(2);
+  pe.className = 'ph-val '+(tp>0?'pos':tp<0?'neg':'');
+  const ov = (d.positions||[]).reduce((a,p)=>a+(p.usdt_size||0)+(p.pnl||0),0);
+  document.getElementById('portVal').textContent = '$'+(bal+ov).toFixed(2);
+  const tot = (d.wins||0)+(d.losses||0);
+  document.getElementById('wr').textContent = tot?Math.round(d.wins/tot*100)+'%':'—';
+  document.getElementById('tradesN').textContent = tot;
+  document.getElementById('openN').textContent = (d.positions||[]).length+'/2';
+  document.getElementById('posLbl').textContent = (d.positions||[]).length+' active';
+  const sc = d.stats||{};
+  [['sScanned',sc.scanned],['sNew',sc.new],['sSig',sc.signals],['sTraded',sc.traded],
+   ['sc2',sc.scanned],['nc2',sc.new],['sg2',sc.signals],['tr2',sc.traded]].forEach(([id,v])=>{
+    const el=document.getElementById(id); if(el) el.textContent=v||0;
+  });
+  if (d.signal_mode) {
+    ['lenient','medium','strict'].forEach(m=>{
+      const el=document.getElementById('btn-'+m); if(el) el.classList.remove('on');
+    });
+    const active=document.getElementById('btn-'+d.signal_mode);
+    if(active) active.classList.add('on');
+    const ml=document.getElementById('modeLbl');
+    if(ml) ml.textContent=d.signal_mode.toUpperCase();
+  }
+  renderPositions(d.positions||[]);
+  renderTrades(d.trades||[]);
+  renderAnalytics(d);
 }
 
-function renderSignals(sigs){
-  const sec=document.getElementById('sigSec'),list=document.getElementById('sigList');
-  if(!sigs.length){sec.style.display='none';return;}
-  sec.style.display='block';
-  list.innerHTML=sigs.slice(0,2).map(s=>`
-    <div class="sig">
-      <div class="sig-top"><div class="sig-ico">🪙</div><div><div class="sig-sym">${s.symbol}</div><div class="sig-sub">Auto-buying · 24h: ${s.change_24h>=0?'+':''}${s.change_24h}%</div></div></div>
-      <div class="sig-m">
-        <div class="sm-b"><div class="sm-l">Vol Spike</div><div class="sm-v hot">${s.vol_mult}×</div></div>
-        <div class="sm-b"><div class="sm-l">RSI(14)</div><div class="sm-v up">${s.rsi}</div></div>
-        <div class="sm-b"><div class="sm-l">Confidence</div><div class="sm-v up">${s.confidence}%</div></div>
-      </div>
-      <div class="conf"><div class="conf-top"><span>Signal strength</span><span>${s.confidence}%</span></div><div class="conf-tr"><div class="conf-fi" style="width:${s.confidence}%"></div></div></div>
-      <div class="sig-inf">Entry: $${s.price} · TP1: +${cfg.tp1}% · TP2: +${cfg.tp2}% · SL: −${cfg.sl}%</div>
-    </div>`).join('');
-}
-
-function renderPositions(positions){
-  const el=document.getElementById('posList');
-  if(!positions.length){el.innerHTML='<div class="empty">No open positions yet.<br>Bot is scanning Bybit for new listings…</div>';return;}
-  el.innerHTML=positions.map(p=>{
-    const pos=p.pnl>=0;const gc=pos?'var(--green)':'var(--red)';const sign=p.pnl>=0?'+':'-';
-    const prog=Math.min(Math.max((p.pnl_pct||0)/cfg.tp2*100,0),100);
+function renderPositions(positions) {
+  const el = document.getElementById('posList');
+  if (!positions.length) { el.innerHTML='<div class="empty">No open positions yet.<br>Bot is scanning Bybit for signals…</div>'; return; }
+  el.innerHTML = positions.map(p=>{
+    const pos=p.pnl>=0; const gc=pos?'var(--green)':'var(--red)'; const sign=p.pnl>=0?'+':'-';
+    const prog=Math.min(Math.max((p.pnl_pct||0)/(cfg.tp2||70)*100,0),100);
     return `<div class="pos-c">
       <div class="pc-top">
         <div class="pc-co"><div class="pc-ic">🪙</div><div><div class="pc-sy">${p.symbol}</div><div class="pc-st">${p.tp1_hit?'🟡 TP1 hit · SL at breakeven':'🟢 Active'}</div></div></div>
         <div><div class="pc-pv" style="color:${gc}">${sign}$${Math.abs(p.pnl||0).toFixed(2)}</div><div class="pc-pp" style="color:${gc}">${sign}${Math.abs(p.pnl_pct||0).toFixed(2)}%</div></div>
       </div>
       <div class="pc-g">
-        <div class="pd-c"><div class="pd-l">Entry</div><div class="pd-v">$${(p.entry||0).toFixed(8)}</div></div>
-        <div class="pd-c"><div class="pd-l">Current</div><div class="pd-v" style="color:${gc}">$${(p.current||p.entry||0).toFixed(8)}</div></div>
+        <div class="pd-c"><div class="pd-l">Entry</div><div class="pd-v">$${(p.entry||0).toFixed(6)}</div></div>
+        <div class="pd-c"><div class="pd-l">Current</div><div class="pd-v" style="color:${gc}">$${(p.current||p.entry||0).toFixed(6)}</div></div>
         <div class="pd-c"><div class="pd-l">Size</div><div class="pd-v">$${(p.usdt_size||0).toFixed(2)}</div></div>
       </div>
       <div class="tp-w">
-        <div class="tp-t"><span>Progress to TP2</span><span style="color:var(--gold)">+${cfg.tp2}% target</span></div>
+        <div class="tp-t"><span>Progress to TP2</span><span style="color:var(--gold)">TP2 target</span></div>
         <div class="tp-tr"><div class="tp-fi" style="width:${prog}%"></div></div>
-        <div class="tp-ti"><span>Entry</span><span style="color:var(--gold)">TP1 +${cfg.tp1}%</span><span style="color:var(--green)">TP2 +${cfg.tp2}%</span></div>
+        <div class="tp-ti"><span>Entry</span><span style="color:var(--gold)">TP1</span><span style="color:var(--green)">TP2</span></div>
       </div>
       <button class="cl-btn" onclick="closePos('${p.symbol}')">Close Position Manually</button>
-    </div>`;}).join('');
+    </div>`;
+  }).join('');
 }
 
-function renderTrades(trades){
-  const html=trades.slice(0,15).map(t=>{
-    const w=t.result==='win';const sign=t.pnl>=0?'+':'-';const ago=Math.round((Date.now()/1000-(t.close_ts||0))/60);
+function renderTrades(trades) {
+  const html = trades.slice(0,15).map(t=>{
+    const w=t.result==='win'; const sign=t.pnl>=0?'+':'-';
+    const ago=Math.round((Date.now()/1000-(t.close_ts||0))/60);
     return `<div class="tr-row"><div class="tr-ic ${w?'w':'l'}">${w?'✅':'🔴'}</div><div class="tr-inf"><div class="tr-sy">${t.symbol}</div><div class="tr-de">${w?'Target reached':'Stop loss hit'} · ${(t.pnl_pct||0).toFixed(1)}%</div></div><div class="tr-pn"><div class="tr-pv ${w?'w':'l'}">${sign}$${Math.abs(t.pnl||0).toFixed(2)}</div><div class="tr-tm">${ago<1?'just now':ago+'m ago'}</div></div></div>`;
-  }).join('')||'<div class="empty">No trades yet</div>';
-  document.getElementById('tradeList').innerHTML=html;document.getElementById('aList').innerHTML=html;
+  }).join('') || '<div class="empty">No trades yet</div>';
+  document.getElementById('tradeList').innerHTML = html;
+  document.getElementById('aList').innerHTML = html;
 }
 
-function renderAnalytics(d){
-  const tp=d.total_pnl||0;const sign=tp>=0?'+':'-';
-  document.getElementById('aPnl').textContent=sign+'$'+Math.abs(tp).toFixed(2);
-  document.getElementById('aPnl').style.color=tp>=0?'var(--gold)':'var(--red)';
-  const pct=startBal?(tp/startBal*100).toFixed(1):'0.0';
-  document.getElementById('aPnlPct').textContent=(tp>=0?'+':'')+pct+'%';
+function renderAnalytics(d) {
+  const tp=d.total_pnl||0; const sign=tp>=0?'+':'-';
+  document.getElementById('aPnl').textContent = sign+'$'+Math.abs(tp).toFixed(2);
+  document.getElementById('aPnl').style.color = tp>=0?'var(--gold)':'var(--red)';
+  const pct = startBal?(tp/startBal*100).toFixed(1):'0.0';
+  document.getElementById('aPnlPct').textContent = (tp>=0?'+':'')+pct+'%';
   const tot=(d.wins||0)+(d.losses||0);
-  document.getElementById('aWr').textContent=tot?Math.round(d.wins/tot*100)+'%':'—';
-  document.getElementById('aWl').textContent=`${d.wins||0}W / ${d.losses||0}L`;
-  const wins=(d.trades||[]).filter(t=>t.result==='win');const losses=(d.trades||[]).filter(t=>t.result==='loss');
-  document.getElementById('aAW').textContent=wins.length?'+$'+(wins.reduce((a,t)=>a+t.pnl,0)/wins.length).toFixed(2):'—';
-  document.getElementById('aAL').textContent=losses.length?'-$'+Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length).toFixed(2):'—';
+  document.getElementById('aWr').textContent = tot?Math.round(d.wins/tot*100)+'%':'—';
+  document.getElementById('aWl').textContent = `${d.wins||0}W / ${d.losses||0}L`;
+  const wins=(d.trades||[]).filter(t=>t.result==='win');
+  const losses=(d.trades||[]).filter(t=>t.result==='loss');
+  document.getElementById('aAW').textContent = wins.length?'+$'+(wins.reduce((a,t)=>a+t.pnl,0)/wins.length).toFixed(2):'—';
+  document.getElementById('aAL').textContent = losses.length?'-$'+Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length).toFixed(2):'—';
 }
 
-async function closePos(symbol){
-  if(!confirm(`Close ${symbol} at market price?`))return;
-  try{
-    const res=await fetch(`${API}/api/close/${symbol}`,{method:'POST'});const d=await res.json();
-    if(!d.ok)throw new Error(d.error);
-    toast(`Closed ${symbol} · ${d.pnl>=0?'+':''}$${(d.pnl||0).toFixed(2)}`,d.pnl>=0?'g':'y');poll();
-  }catch(e){toast('❌ '+e.message,'r');}
+async function closePos(symbol) {
+  if (!confirm(`Close ${symbol} at market price?`)) return;
+  try {
+    const res=await fetch(`${API}/api/close/${symbol}`,{method:'POST'}); const d=await res.json();
+    if (!d.ok) throw new Error(d.error);
+    toast(`Closed ${symbol} · ${d.pnl>=0?'+':''}$${(d.pnl||0).toFixed(2)}`,d.pnl>=0?'g':'y'); poll();
+  } catch(e) { toast('❌ '+e.message,'r'); }
 }
 
-async function toggleBot(){
-  const res=await fetch(`${API}/api/bot/toggle`,{method:'POST'});const d=await res.json();
+async function toggleBot() {
+  const res=await fetch(`${API}/api/bot/toggle`,{method:'POST'}); const d=await res.json();
   const b=document.getElementById('botBadge'),t=document.getElementById('badgeTxt'),sw=document.getElementById('botSw');
   if(d.bot_on){b.classList.remove('off');t.textContent='AUTO TRADING';sw.classList.add('on');toast('▶ Bot resumed','g');}
   else{b.classList.add('off');t.textContent='PAUSED';sw.classList.remove('on');toast('⏸ Bot paused','y');}
 }
 
+async function setMode(mode) {
+  try {
+    const res=await fetch(`${API}/api/mode/${mode}`,{method:'POST'}); const d=await res.json();
+    if (!d.ok) throw new Error(d.error);
+    ['lenient','medium','strict'].forEach(m=>document.getElementById('btn-'+m).classList.remove('on'));
+    document.getElementById('btn-'+mode).classList.add('on');
+    document.getElementById('modeLbl').textContent = mode.toUpperCase();
+    const descs = {
+      lenient:'🟢 Lenient — EMA9/21/50 · Supertrend · RSI < 75 · More opportunities',
+      medium:'🟡 Medium — EMA13/34/100 · MACD + Volume · Balanced risk/reward',
+      strict:'🔴 Strict — EMA13/34/200 · All filters active · Fewer higher quality signals',
+    };
+    document.getElementById('modeDescBar').textContent = descs[mode];
+    toast(`Mode: ${mode.toUpperCase()}`, mode==='lenient'?'g':mode==='medium'?'y':'r');
+  } catch(e) { toast('❌ '+e.message,'r'); }
+}
+
 function goPage(name,nav){document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.bn').forEach(n=>n.classList.remove('on'));document.getElementById('pg-'+name).classList.add('on');nav.classList.add('on');}
 function openSheet(){document.getElementById('sheet').style.display='block';}
 function closeSheet(){document.getElementById('sheet').style.display='none';}
-
 let toastT;
 function toast(msg,cls=''){const el=document.getElementById('toast');el.textContent=msg;el.className='on '+(cls||'');clearTimeout(toastT);toastT=setTimeout(()=>el.className='',3500);}
-
-async function setMode(mode) {
-  try {
-    const res = await fetch(`${API}/api/mode/${mode}`, {method:'POST'});
-    const d   = await res.json();
-    if (!d.ok) throw new Error(d.error);
-
-    // Update buttons
-    ['lenient','medium','strict'].forEach(m => {
-      document.getElementById('btn-'+m).classList.remove('on');
-    });
-    document.getElementById('btn-'+mode).classList.add('on');
-
-    // Update label
-    document.getElementById('modeLbl').textContent = mode.toUpperCase();
-
-    // Update desc
-    const descs = {
-      lenient: '🟢 Lenient — EMA9/21/50 · Supertrend · RSI < 75 · More trading opportunities',
-      medium:  '🟡 Medium — EMA13/34/100 · MACD + Volume filter · Balanced risk/reward',
-      strict:  '🔴 Strict — EMA13/34/200 · All filters active · Fewer but higher quality signals',
-    };
-    document.getElementById('modeDescBar').textContent = descs[mode];
-
-    toast(`Signal mode: ${mode.toUpperCase()}`, mode==='lenient'?'g':mode==='medium'?'y':'r');
-  } catch(e) { toast('❌ ' + e.message, 'r'); }
-}
-
 </script>
 </body>
 </html>
