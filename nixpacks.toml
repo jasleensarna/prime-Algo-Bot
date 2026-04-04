@@ -1,8 +1,5 @@
-[phases.build]
-cmds = ["pip install -r requirements.txt"]
+[phases.install]
+cmds = ["pip install fastapi uvicorn httpx"]
 
-[phases.start]
-cmds = ["uvicorn main:app --host 0.0.0.0 --port $PORT"]
-
-[variables]
-PYTHON_VERSION = "3.11"
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
