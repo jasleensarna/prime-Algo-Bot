@@ -376,6 +376,99 @@ def market_context_allows(signal, ctx):
         return True, f"OI={oi_trend} funding={ctx['funding_rate']:.3f}%"
     return True, "no filter"
 
+
+# ── DYNAMIC TP/SL BASED ON SIGNAL STRENGTH ───────────────────
+def calc_signal_strength(signal, details, ctx, mtf_ok=True):
+    """
+    Score the signal 0–100 based on indicator confluence.
+    Higher score = wider TP targets (stronger move expected).
+
+    Scoring breakdown:
+      RSI momentum      → up to 20 pts
+      Volume spike      → up to 20 pts
+      Funding alignment → up to 15 pts
+      OI trend          → up to 15 pts
+      Liquidation bias  → up to 20 pts
+      MTF confirmation  → up to 10 pts
+    """
+    score = 0
+
+    # ── RSI: how far from neutral (50) ──
+    rsi = details.get("rsi", 50)
+    if signal == "long":
+        rsi_dist = max(0, rsi - 50)        # 50→70 = 0→20 pts
+    else:
+        rsi_dist = max(0, 50 - rsi)        # 50→30 = 0→20 pts
+    score += min(rsi_dist, 20)
+
+    # ── Volume spike ──
+    vol_ratio = details.get("vol_ratio", 1.0)
+    vol_score = min((vol_ratio - 1.0) * 5, 20)   # 1x=0, 5x=20pts
+    score += max(0, vol_score)
+
+    # ── Funding rate alignment ──
+    funding_bias = ctx.get("funding_bias", "neutral")
+    if signal == "long"  and funding_bias == "short_heavy": score += 15  # shorts crowded = great for long
+    elif signal == "short" and funding_bias == "long_heavy":  score += 15  # longs crowded = great for short
+    elif funding_bias == "neutral":                            score += 7   # neutral = fine
+    # opposite bias = 0 pts (already filtered by market_context_allows)
+
+    # ── OI trend ──
+    oi = ctx.get("oi_trend", "neutral")
+    if oi == "rising":   score += 15
+    elif oi == "neutral": score += 7
+    # falling = 0 pts
+
+    # ── Liquidation bias ──
+    liq = ctx.get("liq_bias", "neutral")
+    if signal == "long"  and liq == "shorts_liq": score += 20  # short squeeze = very bullish
+    elif signal == "short" and liq == "longs_liq":  score += 20  # long liquidation = very bearish
+    elif liq == "neutral":                            score += 5
+
+    # ── MTF confirmation ──
+    if mtf_ok: score += 10
+
+    score = min(100, max(0, score))
+    return score
+
+
+def get_dynamic_tp_sl(score, entry, signal):
+    """
+    Map signal strength score → TP1/TP2/TP3/SL percentages.
+    Returns dict with pct values and label.
+    """
+    if score >= 80:
+        tp1_pct, tp2_pct, tp3_pct, sl_pct = 10.0, 25.0, 40.0, 4.0
+        label = "VERY STRONG"
+    elif score >= 65:
+        tp1_pct, tp2_pct, tp3_pct, sl_pct =  7.0, 18.0, 30.0, 3.5
+        label = "STRONG"
+    elif score >= 40:
+        tp1_pct, tp2_pct, tp3_pct, sl_pct =  5.0, 12.0, 20.0, 3.0
+        label = "MEDIUM"
+    else:
+        tp1_pct, tp2_pct, tp3_pct, sl_pct =  3.0,  7.0, 12.0, 2.0
+        label = "WEAK"
+
+    if signal == "long":
+        tp1 = round(entry * (1 + tp1_pct / 100), 6)
+        tp2 = round(entry * (1 + tp2_pct / 100), 6)
+        tp3 = round(entry * (1 + tp3_pct / 100), 6)
+        sl  = round(entry * (1 - sl_pct  / 100), 6)
+    else:
+        tp1 = round(entry * (1 - tp1_pct / 100), 6)
+        tp2 = round(entry * (1 - tp2_pct / 100), 6)
+        tp3 = round(entry * (1 - tp3_pct / 100), 6)
+        sl  = round(entry * (1 + sl_pct  / 100), 6)
+
+    return {
+        "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
+        "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
+        "tp3_pct": tp3_pct, "sl_pct":  sl_pct,
+        "score": score, "label": label,
+    }
+
+
 # ── SCANNER ───────────────────────────────────────────────────
 async def scan_once():
     if state["daily_loss_hit"]:
@@ -445,37 +538,28 @@ async def analyse(symbol):
         if not allowed:
             print(f"MARKET BLOCK {symbol} [{signal}]: {reason}"); return
 
-        price = closes[-1]
-
-        # ── PERCENTAGE-BASED TP1 / TP2 / TP3 / SL ──────────────
-        # TP1: +5%  → bot closes 40% of position
-        # TP2: +15% → bot closes another 40%
-        # TP3: +25% → bot closes final 20%
-        # SL:  -3%  → full exit immediately
-        tp1_pct = state["tp1_pct"]   # 5.0
-        tp2_pct = state["tp2_pct"]   # 15.0
-        tp3_pct = state["tp3_pct"]   # 25.0
-        sl_pct  = state["sl_pct"]    # 3.0
-
-        if signal == "long":
-            tp1 = round(price * (1 + tp1_pct / 100), 6)
-            tp2 = round(price * (1 + tp2_pct / 100), 6)
-            tp3 = round(price * (1 + tp3_pct / 100), 6)
-            sl  = round(price * (1 - sl_pct  / 100), 6)
-        else:  # short
-            tp1 = round(price * (1 - tp1_pct / 100), 6)
-            tp2 = round(price * (1 - tp2_pct / 100), 6)
-            tp3 = round(price * (1 - tp3_pct / 100), 6)
-            sl  = round(price * (1 + sl_pct  / 100), 6)
-
+        price   = closes[-1]
         atr_val = details.get("atr", 0)
+
+        # ── DYNAMIC TP/SL based on signal strength score ──
+        mtf_ok  = True  # already passed MTF check above
+        score   = calc_signal_strength(signal, details, ctx, mtf_ok)
+        tp_sl   = get_dynamic_tp_sl(score, price, signal)
+
         state["pending"].append({
             "symbol":    symbol,
             "direction": signal,
             "price":     price,
-            "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
-            "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
-            "tp3_pct": tp3_pct, "sl_pct": sl_pct,
+            "tp1":     tp_sl["tp1"],
+            "tp2":     tp_sl["tp2"],
+            "tp3":     tp_sl["tp3"],
+            "sl":      tp_sl["sl"],
+            "tp1_pct": tp_sl["tp1_pct"],
+            "tp2_pct": tp_sl["tp2_pct"],
+            "tp3_pct": tp_sl["tp3_pct"],
+            "sl_pct":  tp_sl["sl_pct"],
+            "score":   score,
+            "label":   tp_sl["label"],
             "atr":       atr_val,
             "rsi":       details.get("rsi", 0),
             "vol":       details.get("vol_ratio", 0),
@@ -486,9 +570,11 @@ async def analyse(symbol):
             "ts":        int(time.time()),
         })
         state["stats"]["signals"] += 1
-        print(f"SIGNAL [{mode.upper()}] {signal.upper()}: {symbol} "
-              f"TP1={tp1_pct}% TP2={tp2_pct}% TP3={tp3_pct}% SL={sl_pct}% "
-              f"rsi={details.get('rsi')} OI={ctx['oi_trend']} liq={ctx['liq_bias']}")
+        print(f"SIGNAL [{tp_sl['label']}·{score}/100] {signal.upper()} {symbol} "
+              f"TP1=+{tp_sl['tp1_pct']}% TP2=+{tp_sl['tp2_pct']}% "
+              f"TP3=+{tp_sl['tp3_pct']}% SL=-{tp_sl['sl_pct']}% "
+              f"rsi={details.get('rsi')} vol={details.get('vol_ratio')}x "
+              f"OI={ctx['oi_trend']} liq={ctx['liq_bias']}")
 
     except Exception as e:
         print(f"Analyse {symbol}: {e}")
@@ -504,28 +590,27 @@ async def execute_trade(symbol, direction, usdt_amount, atr_val=0, entry_price=0
     if qty <= 0: raise Exception("Qty too small")
     side = "Buy" if direction == "long" else "Sell"
 
-    # ── Recalculate TP/SL at actual fill price ──
-    tp1_pct = state["tp1_pct"]
-    tp2_pct = state["tp2_pct"]
-    tp3_pct = state["tp3_pct"]
-    sl_pct  = state["sl_pct"]
+    # ── Recalculate TP/SL using the score stored in pending signal ──
+    # Find the pending signal to get its score (or use defaults)
+    pending_sig = next((s for s in state["pending"] if s["symbol"] == symbol), None)
+    score = pending_sig.get("score", 50) if pending_sig else 50
+    tp_sl = get_dynamic_tp_sl(score, price, direction)
 
-    if direction == "long":
-        tp1 = round(price * (1 + tp1_pct / 100), 6)
-        tp2 = round(price * (1 + tp2_pct / 100), 6)
-        tp3 = round(price * (1 + tp3_pct / 100), 6)
-        sl  = round(price * (1 - sl_pct  / 100), 6)
-    else:
-        tp1 = round(price * (1 - tp1_pct / 100), 6)
-        tp2 = round(price * (1 - tp2_pct / 100), 6)
-        tp3 = round(price * (1 - tp3_pct / 100), 6)
-        sl  = round(price * (1 + sl_pct  / 100), 6)
+    tp1     = tp_sl["tp1"];    tp2     = tp_sl["tp2"];    tp3     = tp_sl["tp3"]
+    sl      = tp_sl["sl"]
+    tp1_pct = tp_sl["tp1_pct"]; tp2_pct = tp_sl["tp2_pct"]
+    tp3_pct = tp_sl["tp3_pct"]; sl_pct  = tp_sl["sl_pct"]
+    label   = tp_sl["label"]
 
-    print(f"Opening {direction.upper()} {symbol} qty={qty} @ {price} | "
-          f"TP1={tp1}(+{tp1_pct}%) TP2={tp2}(+{tp2_pct}%) TP3={tp3}(+{tp3_pct}%) SL={sl}(-{sl_pct}%)")
+    print(f"Opening {direction.upper()} {symbol} [{label} {score}/100] qty={qty} @ {price} | "
+          f"TP1=+{tp1_pct}%({tp1}) TP2=+{tp2_pct}%({tp2}) TP3=+{tp3_pct}%({tp3}) SL=-{sl_pct}%({sl})")
 
-    # Place order — TP set to TP1 initially; TP2/TP3 managed by monitor loop
-    await place_futures_order(symbol, side, qty, tp=tp1, sl=sl)
+    # Place order — NO TP on Bybit order. Bot manages TP1/TP2/TP3 internally
+    # via the 5-second monitor loop using reduce-only market orders.
+    # Only SL is set on Bybit as a safety net.
+    await place_futures_order(symbol, side, qty, sl=sl)
+    # Also set TP2 as a limit order on Bybit as backup for TP3 target
+    # (optional safety net — primary execution is via monitor loop)
 
     if direction == "long": state["stats"]["long"] += 1
     else: state["stats"]["short"] += 1
@@ -537,11 +622,13 @@ async def execute_trade(symbol, direction, usdt_amount, atr_val=0, entry_price=0
         "entry":     price,
         "current":   price,
         "qty":       qty,
-        "qty_remaining": qty,      # tracks what's left after partial closes
+        "qty_remaining": qty,
         "usdt_size": usdt_amount,
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
         "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
         "tp3_pct": tp3_pct, "sl_pct": sl_pct,
+        "score":   score,
+        "label":   label,
         "highest": price,
         "lowest":  price,
         "tp1_hit": False,
@@ -554,108 +641,143 @@ async def execute_trade(symbol, direction, usdt_amount, atr_val=0, entry_price=0
     state["balance"] = await get_balance()
     print(f"POSITION OPEN: {direction.upper()} {symbol} @ {price} x{state['leverage']}")
 
-# ── POSITION MONITORING ───────────────────────────────────────
+# ── POSITION MONITORING — runs every 5 seconds ───────────────
+# Bybit only supports 1 TP per order — so we set ONLY the SL on Bybit.
+# TP1 / TP2 / TP3 are managed here via reduce-only market orders:
+#   TP1 (+5%)  → close 40% of position
+#   TP2 (+15%) → close another 40%
+#   TP3 (+25%) → close final 20%  (full close)
+#   SL  (-3%)  → Bybit handles natively; bot checks as backup
 async def monitor_positions():
     while True:
         if state["bot_on"] and state["api_key"] and state["positions"]:
             for sym in list(state["positions"]):
                 try:
-                    pos   = state["positions"][sym]
-                    price = await get_price(sym)
+                    pos      = state["positions"][sym]
+                    price    = await get_price(sym)
                     if price <= 0: continue
+
                     pos["current"] = price
                     direction = pos["direction"]
-                    qty_rem = pos.get("qty_remaining", pos["qty"])
+                    qty_rem   = pos.get("qty_remaining", pos["qty"])
+                    orig_qty  = pos["qty"]
 
                     if direction == "long":
                         pos["pnl"]     = (price - pos["entry"]) * qty_rem
                         pos["pnl_pct"] = (price - pos["entry"]) / pos["entry"] * 100 * pos["leverage"]
 
-                        # Update trailing high → move SL up
+                        # Trailing SL — push up as price rises, update on Bybit
                         if price > pos["highest"]:
                             pos["highest"] = price
                             new_sl = round(price * (1 - state["trail_pct"] / 100), 6)
                             if new_sl > pos["sl"]:
                                 pos["sl"] = new_sl
-                                print(f"Trail SL up: {sym} SL={new_sl}")
+                                try:
+                                    await by_post("/v5/position/trading-stop", {
+                                        "category": "linear", "symbol": sym,
+                                        "stopLoss": str(new_sl),
+                                        "slTriggerBy": "LastPrice",
+                                        "positionIdx": 0,
+                                    })
+                                    print(f"Trail SL ↑ {sym} SL={new_sl}")
+                                except Exception as ex:
+                                    print(f"Trail SL update err {sym}: {ex}")
 
-                        # ── TP1 hit → close 40% ──
+                        # ── TP1 → close 40% ──
                         if not pos["tp1_hit"] and price >= pos["tp1"]:
                             pos["tp1_hit"] = True
-                            close_qty = round(qty_rem * 0.4, 3)
-                            pos["qty_remaining"] = round(qty_rem - close_qty, 3)
-                            partial_pnl = (price - pos["entry"]) * close_qty
-                            state["today_pnl"] += partial_pnl
-                            state["total_pnl"] += partial_pnl
-                            await close_futures_position(sym, "long", close_qty)
-                            print(f"TP1 HIT LONG: {sym} @ {price} (+{pos['tp1_pct']}%) — closed 40%")
+                            close_qty = round(orig_qty * 0.4, 3)
+                            if close_qty > 0:
+                                pos["qty_remaining"] = round(qty_rem - close_qty, 3)
+                                partial_pnl = (price - pos["entry"]) * close_qty * pos["leverage"]
+                                state["today_pnl"] += partial_pnl
+                                state["total_pnl"] += partial_pnl
+                                await close_futures_position(sym, "long", close_qty)
+                                print(f"TP1 LONG {sym} @{price} +{pos['tp1_pct']}% closed 40% pnl=${partial_pnl:.2f}")
 
-                        # ── TP2 hit → close another 40% ──
+                        # ── TP2 → close another 40% ──
                         elif pos["tp1_hit"] and not pos["tp2_hit"] and price >= pos["tp2"]:
                             pos["tp2_hit"] = True
-                            close_qty = round(qty_rem * 0.667, 3)  # ~40% of original
-                            pos["qty_remaining"] = round(qty_rem - close_qty, 3)
-                            partial_pnl = (price - pos["entry"]) * close_qty
-                            state["today_pnl"] += partial_pnl
-                            state["total_pnl"] += partial_pnl
-                            await close_futures_position(sym, "long", close_qty)
-                            print(f"TP2 HIT LONG: {sym} @ {price} (+{pos['tp2_pct']}%) — closed 40%")
+                            close_qty = round(orig_qty * 0.4, 3)
+                            rem = pos["qty_remaining"]
+                            close_qty = min(close_qty, rem)
+                            if close_qty > 0:
+                                pos["qty_remaining"] = round(rem - close_qty, 3)
+                                partial_pnl = (price - pos["entry"]) * close_qty * pos["leverage"]
+                                state["today_pnl"] += partial_pnl
+                                state["total_pnl"] += partial_pnl
+                                await close_futures_position(sym, "long", close_qty)
+                                print(f"TP2 LONG {sym} @{price} +{pos['tp2_pct']}% closed 40% pnl=${partial_pnl:.2f}")
 
-                        # ── TP3 hit → close final 20% ──
-                        elif pos["tp2_hit"] and price >= pos["tp3"]:
+                        # ── TP3 → close final 20% ──
+                        elif pos["tp1_hit"] and pos["tp2_hit"] and price >= pos["tp3"]:
+                            print(f"TP3 LONG {sym} @{price} +{pos['tp3_pct']}% closing final 20%")
                             await close_position_and_record(sym, "win")
-                            print(f"TP3 HIT LONG: {sym} @ {price} (+{pos['tp3_pct']}%) — full close")
                             continue
 
-                        # ── SL hit → full exit ──
-                        if price <= pos["sl"]:
+                        # SL backup check
+                        if sym in state["positions"] and price <= pos["sl"]:
+                            print(f"SL LONG {sym} @{price} -{pos['sl_pct']}%")
                             await close_position_and_record(sym, "loss")
-                            print(f"SL HIT LONG: {sym} @ {price} (-{pos['sl_pct']}%)")
                             continue
 
-                    else:  # SHORT
+                    else:  # ── SHORT ──
                         pos["pnl"]     = (pos["entry"] - price) * qty_rem
                         pos["pnl_pct"] = (pos["entry"] - price) / pos["entry"] * 100 * pos["leverage"]
 
+                        # Trailing SL — push down as price falls, update on Bybit
                         if price < pos["lowest"]:
                             pos["lowest"] = price
                             new_sl = round(price * (1 + state["trail_pct"] / 100), 6)
                             if new_sl < pos["sl"]:
                                 pos["sl"] = new_sl
-                                print(f"Trail SL down: {sym} SL={new_sl}")
+                                try:
+                                    await by_post("/v5/position/trading-stop", {
+                                        "category": "linear", "symbol": sym,
+                                        "stopLoss": str(new_sl),
+                                        "slTriggerBy": "LastPrice",
+                                        "positionIdx": 0,
+                                    })
+                                    print(f"Trail SL ↓ {sym} SL={new_sl}")
+                                except Exception as ex:
+                                    print(f"Trail SL update err {sym}: {ex}")
 
-                        # TP1 hit → close 40%
+                        # ── TP1 → close 40% ──
                         if not pos["tp1_hit"] and price <= pos["tp1"]:
                             pos["tp1_hit"] = True
-                            close_qty = round(qty_rem * 0.4, 3)
-                            pos["qty_remaining"] = round(qty_rem - close_qty, 3)
-                            partial_pnl = (pos["entry"] - price) * close_qty
-                            state["today_pnl"] += partial_pnl
-                            state["total_pnl"] += partial_pnl
-                            await close_futures_position(sym, "short", close_qty)
-                            print(f"TP1 HIT SHORT: {sym} @ {price} (-{pos['tp1_pct']}%) — closed 40%")
+                            close_qty = round(orig_qty * 0.4, 3)
+                            if close_qty > 0:
+                                pos["qty_remaining"] = round(qty_rem - close_qty, 3)
+                                partial_pnl = (pos["entry"] - price) * close_qty * pos["leverage"]
+                                state["today_pnl"] += partial_pnl
+                                state["total_pnl"] += partial_pnl
+                                await close_futures_position(sym, "short", close_qty)
+                                print(f"TP1 SHORT {sym} @{price} -{pos['tp1_pct']}% closed 40% pnl=${partial_pnl:.2f}")
 
-                        # TP2 hit → close 40%
+                        # ── TP2 → close another 40% ──
                         elif pos["tp1_hit"] and not pos["tp2_hit"] and price <= pos["tp2"]:
                             pos["tp2_hit"] = True
-                            close_qty = round(qty_rem * 0.667, 3)
-                            pos["qty_remaining"] = round(qty_rem - close_qty, 3)
-                            partial_pnl = (pos["entry"] - price) * close_qty
-                            state["today_pnl"] += partial_pnl
-                            state["total_pnl"] += partial_pnl
-                            await close_futures_position(sym, "short", close_qty)
-                            print(f"TP2 HIT SHORT: {sym} @ {price} (-{pos['tp2_pct']}%) — closed 40%")
+                            close_qty = round(orig_qty * 0.4, 3)
+                            rem = pos["qty_remaining"]
+                            close_qty = min(close_qty, rem)
+                            if close_qty > 0:
+                                pos["qty_remaining"] = round(rem - close_qty, 3)
+                                partial_pnl = (pos["entry"] - price) * close_qty * pos["leverage"]
+                                state["today_pnl"] += partial_pnl
+                                state["total_pnl"] += partial_pnl
+                                await close_futures_position(sym, "short", close_qty)
+                                print(f"TP2 SHORT {sym} @{price} -{pos['tp2_pct']}% closed 40% pnl=${partial_pnl:.2f}")
 
-                        # TP3 hit → close final 20%
-                        elif pos["tp2_hit"] and price <= pos["tp3"]:
+                        # ── TP3 → close final 20% ──
+                        elif pos["tp1_hit"] and pos["tp2_hit"] and price <= pos["tp3"]:
+                            print(f"TP3 SHORT {sym} @{price} -{pos['tp3_pct']}% closing final 20%")
                             await close_position_and_record(sym, "win")
-                            print(f"TP3 HIT SHORT: {sym} @ {price} (-{pos['tp3_pct']}%) — full close")
                             continue
 
-                        # SL hit
-                        if price >= pos["sl"]:
+                        # SL backup check
+                        if sym in state["positions"] and price >= pos["sl"]:
+                            print(f"SL SHORT {sym} @{price} +{pos['sl_pct']}%")
                             await close_position_and_record(sym, "loss")
-                            print(f"SL HIT SHORT: {sym} @ {price} (+{pos['sl_pct']}%)")
                             continue
 
                 except Exception as e:
@@ -663,7 +785,6 @@ async def monitor_positions():
 
         check_daily_loss()
         await asyncio.sleep(5)
-
 async def close_position_and_record(symbol, result):
     pos = state["positions"].get(symbol)
     if not pos: return
@@ -760,9 +881,15 @@ async def get_status():
         "use_mtf":        state["use_mtf"],
         "daily_loss_hit": state["daily_loss_hit"],
         "daily_loss_pct": daily_loss_pct,
-        "positions":      list(state["positions"].values()),
+        "positions":      [
+            {**p, "score": p.get("score", 0), "label": p.get("label", "—")}
+            for p in state["positions"].values()
+        ],
         "trades":         state["trades"][:20],
-        "pending":        state["pending"][:3],
+        "pending":        [
+            {**p, "score": p.get("score", 0), "label": p.get("label", "—")}
+            for p in state["pending"][:3]
+        ],
         "stats":          state["stats"],
         "wins":           state["wins"],
         "losses":         state["losses"],
