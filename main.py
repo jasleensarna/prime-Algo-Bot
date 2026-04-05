@@ -228,18 +228,27 @@ MODES = {
     },
 }
 
-TOP50 = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","AVAXUSDT","DOGEUSDT","DOTUSDT","LINKUSDT",
-    "MATICUSDT","LTCUSDT","UNIUSDT","ATOMUSDT","ETCUSDT",
-    "XLMUSDT","BCHUSDT","ALGOUSDT","VETUSDT","FILUSDT",
-    "AAVEUSDT","APTUSDT","ARBUSDT","OPUSDT","SUIUSDT",
-    "INJUSDT","TONUSDT","SEIUSDT","TIAUSDT","STXUSDT",
-    "RUNEUSDT","LDOUSDT","MKRUSDT","SNXUSDT","COMPUSDT",
-    "CRVUSDT","SANDUSDT","MANAUSDT","AXSUSDT","GALAUSDT",
-    "NEARUSDT","FTMUSDT","FLOWUSDT","EGLDUSDT","THETAUSDT",
-    "XTZUSDT","KSMUSDT","WAVESUSDT","ZILUSDT","IOTAUSDT",
-]
+TOP50 = []  # Populated dynamically from Bybit on startup — all USDT linear futures
+
+async def fetch_all_symbols():
+    """Fetch every active USDT linear perpetual from Bybit."""
+    try:
+        data = await by_get("/v5/market/instruments-info", {
+            "category": "linear", "limit": 1000
+        })
+        symbols = []
+        for item in data.get("result", {}).get("list", []):
+            sym    = item.get("symbol", "")
+            status = item.get("status", "")
+            settle = item.get("settleCoin", "")
+            # Only active USDT-settled perpetuals
+            if status == "Trading" and settle == "USDT" and sym.endswith("USDT"):
+                symbols.append(sym)
+        symbols.sort()
+        return symbols
+    except Exception as e:
+        print(f"fetch_all_symbols error: {e}")
+        return TOP50 or ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"]
 
 BYBIT = "https://api.bybit.com"
 MIN_ORDER = 10.0
@@ -656,9 +665,17 @@ async def scan_once():
     if state["daily_loss_hit"]:
         print("Daily loss limit hit — bot paused"); return
     try:
-        sample = random.sample(TOP50, min(15, len(TOP50)))
+        # Refresh symbol list every scan — catches new listings automatically
+        all_symbols = await fetch_all_symbols()
+        if all_symbols:
+            TOP50.clear()
+            TOP50.extend(all_symbols)
+
+        # Sample 20 random coins per scan cycle to spread load evenly
+        # Full list rotates through every few cycles
+        sample = random.sample(TOP50, min(20, len(TOP50)))
         state["stats"]["scanned"] = len(TOP50)
-        print(f"Scan: {len(sample)} coins | mode={state['signal_mode']} | positions={len(state['positions'])}")
+        print(f"Scan: {len(sample)} of {len(TOP50)} coins | mode={state['signal_mode']} | positions={len(state['positions'])}")
         for sym in sample:
             if sym in state["positions"]: continue
             if any(p["symbol"] == sym for p in state["pending"]): continue
@@ -1042,6 +1059,13 @@ async def startup():
             print(f"Balance: ${state['balance']:.2f}")
         except Exception as e:
             print(f"Balance error: {e}")
+    # Pre-load all Bybit symbols on startup
+    symbols = await fetch_all_symbols()
+    if symbols:
+        TOP50.clear()
+        TOP50.extend(symbols)
+        print(f"Loaded {len(TOP50)} symbols from Bybit")
+
     asyncio.create_task(bot_loop())
     asyncio.create_task(monitor_positions())
 
