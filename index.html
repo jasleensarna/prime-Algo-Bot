@@ -13,6 +13,7 @@
   --green:#22c55e;--green-dim:rgba(34,197,94,0.12);
   --red:#ef4444;--red-dim:rgba(239,68,68,0.12);
   --blue:#3b82f6;--blue-dim:rgba(59,130,246,0.12);
+  --purple:#a855f7;--purple-dim:rgba(168,85,247,0.12);
   --text:#e8e8f0;--text2:#8888a8;--text3:#4a4a6a;
   --sh:0 2px 12px rgba(0,0,0,0.4);
   --fn:'DM Sans',sans-serif;--fm:'JetBrains Mono',monospace;--fh:'Playfair Display',serif;
@@ -124,13 +125,35 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
 .pos-c{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:10px}
 .pos-c.long{border-left:3px solid var(--green)}
 .pos-c.short{border-left:3px solid var(--red)}
-.pc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.pc-co{display:flex;align-items:center;gap:6px}
+.pc-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.pc-co{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pc-dir{font-family:var(--fm);font-size:10px;font-weight:700;letter-spacing:1px;padding:3px 8px;border-radius:6px}
 .pc-dir.long{background:var(--green-dim);color:var(--green)}
 .pc-dir.short{background:var(--red-dim);color:var(--red)}
 .pc-sym{font-family:var(--fh);font-size:15px;color:var(--text);margin-left:4px}
 .pc-lev{font-family:var(--fm);font-size:10px;color:var(--text2)}
+
+/* ── SCORE BADGE — new ── */
+.score-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  border-radius:20px;padding:3px 9px;
+  font-family:var(--fm);font-size:10px;font-weight:700;letter-spacing:0.5px;
+  white-space:nowrap;
+}
+.score-badge.weak    {background:rgba(148,163,184,0.12);color:#94a3b8;border:1px solid rgba(148,163,184,0.2)}
+.score-badge.medium  {background:var(--gold-dim);      color:var(--gold);border:1px solid rgba(212,168,67,0.25)}
+.score-badge.strong  {background:var(--green-dim);     color:var(--green);border:1px solid rgba(34,197,94,0.25)}
+.score-badge.vstrong {background:var(--purple-dim);    color:var(--purple);border:1px solid rgba(168,85,247,0.25);box-shadow:0 0 8px rgba(168,85,247,0.15)}
+
+/* TP chip row — shows TP1/TP2/TP3/SL inline */
+.tp-chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.tp-chip{font-family:var(--fm);font-size:10px;padding:3px 8px;border-radius:6px;font-weight:700}
+.tp-chip.tp1{background:rgba(34,197,94,0.1);color:var(--green);border:1px solid rgba(34,197,94,0.2)}
+.tp-chip.tp2{background:rgba(212,168,67,0.1);color:var(--gold);border:1px solid rgba(212,168,67,0.2)}
+.tp-chip.tp3{background:rgba(168,85,247,0.1);color:var(--purple);border:1px solid rgba(168,85,247,0.2)}
+.tp-chip.sl {background:rgba(239,68,68,0.1); color:var(--red); border:1px solid rgba(239,68,68,0.2)}
+.tp-chip.hit{opacity:0.45;text-decoration:line-through}
+
 .pc-pv{font-family:var(--fh);font-size:18px;text-align:right;line-height:1}
 .pc-pp{font-family:var(--fm);font-size:11px;text-align:right;margin-top:2px}
 .pc-g{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
@@ -148,18 +171,21 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
 .trail-fill{height:100%;background:var(--gold);border-radius:2px;transition:width 0.5s}
 .cl-btn{width:100%;padding:10px;background:var(--bg2);border:1.5px solid rgba(239,68,68,0.3);border-radius:10px;font-size:12px;font-weight:600;color:var(--red);cursor:pointer;transition:all 0.15s}
 .cl-btn:active{background:var(--red-dim)}
+
+/* Trade history row */
 .tr-row{display:flex;align-items:center;gap:12px;padding:11px 13px;background:var(--card);border:1px solid var(--border);border-radius:13px;margin-bottom:8px}
 .tr-ic{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
 .tr-ic.w{background:var(--green-dim)}
 .tr-ic.l{background:var(--red-dim)}
-.tr-inf{flex:1}
-.tr-sy{font-weight:700;font-size:13px;color:var(--text)}
-.tr-de{font-size:11px;color:var(--text2);margin-top:2px}
-.tr-pn{text-align:right}
+.tr-inf{flex:1;min-width:0}
+.tr-sy{font-weight:700;font-size:13px;color:var(--text);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tr-de{font-size:11px;color:var(--text2);margin-top:3px}
+.tr-pn{text-align:right;flex-shrink:0}
 .tr-pv{font-family:var(--fm);font-size:13px;font-weight:700}
 .tr-pv.w{color:var(--green)}
 .tr-pv.l{color:var(--red)}
 .tr-tm{font-size:10px;color:var(--text2);margin-top:2px}
+
 .bnav{position:fixed;bottom:0;left:0;right:0;background:rgba(14,14,18,0.96);border-top:1px solid var(--border);display:flex;padding:8px 0 max(env(safe-area-inset-bottom),10px);backdrop-filter:blur(16px);z-index:50}
 .bn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 0;cursor:pointer}
 .bn-i{font-size:20px;line-height:1;transition:transform 0.2s}
@@ -215,13 +241,10 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
       <span class="lbl">Secret Key</span>
       <input class="inp" id="iSec" type="password" placeholder="Paste your Secret Key" autocomplete="off">
     </div>
-
     <div class="warn">🔒 Keys sent only to your Railway server — never stored anywhere else.</div>
-
     <div class="crd">
       <div class="crd-t">⚙️ Trading Settings</div>
       <div class="crd-s">Your selections are saved — they persist on refresh</div>
-
       <span class="lbl">Risk Per Trade (%)</span>
       <div class="chip-g c4" id="grp-risk">
         <div class="chip" data-group="risk" data-val="1" onclick="setChip(this)"><div class="chip-n">1%</div><div class="chip-l">Safe</div></div>
@@ -229,7 +252,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="chip" data-group="risk" data-val="3" onclick="setChip(this)"><div class="chip-n">3%</div><div class="chip-l">Bold</div></div>
         <div class="chip" data-group="risk" data-val="5" onclick="setChip(this)"><div class="chip-n">5%</div><div class="chip-l">High</div></div>
       </div>
-
       <span class="lbl">Leverage</span>
       <div class="chip-g c4" id="grp-lev">
         <div class="chip" data-group="lev" data-val="1" onclick="setChip(this)"><div class="chip-n">1×</div><div class="chip-l">No lev</div></div>
@@ -237,7 +259,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="chip" data-group="lev" data-val="3" onclick="setChip(this)"><div class="chip-n">3×</div><div class="chip-l">Aggressive</div></div>
         <div class="chip" data-group="lev" data-val="5" onclick="setChip(this)"><div class="chip-n">5×</div><div class="chip-l">High risk</div></div>
       </div>
-
       <span class="lbl">Max Daily Loss (%) — Bot pauses if hit</span>
       <div class="chip-g c4" id="grp-dloss">
         <div class="chip" data-group="dloss" data-val="3" onclick="setChip(this)"><div class="chip-n">3%</div><div class="chip-l">Tight</div></div>
@@ -245,7 +266,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="chip" data-group="dloss" data-val="10" onclick="setChip(this)"><div class="chip-n">10%</div><div class="chip-l">Loose</div></div>
         <div class="chip" data-group="dloss" data-val="20" onclick="setChip(this)"><div class="chip-n">20%</div><div class="chip-l">Max</div></div>
       </div>
-
       <span class="lbl">Trailing Stop Loss</span>
       <div class="chip-g c4" id="grp-trail">
         <div class="chip" data-group="trail" data-val="5" onclick="setChip(this)"><div class="chip-n">5%</div><div class="chip-l">Tight</div></div>
@@ -254,7 +274,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="chip" data-group="trail" data-val="20" onclick="setChip(this)"><div class="chip-n">20%</div><div class="chip-l">Wide</div></div>
       </div>
     </div>
-
     <div class="crd">
       <div class="crd-t">🔬 Advanced Features</div>
       <div class="crd-s">Toggle on/off before connecting</div>
@@ -271,7 +290,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="tog on" id="togShort" onclick="this.classList.toggle('on')"></div>
       </div>
     </div>
-
     <button class="go" id="launchBtn" onclick="connect()">⚡ Connect & Start Futures Bot</button>
     <div class="fine">⚠️ Futures trading with leverage can result in losses greater than your deposit. Only trade what you can afford to lose.</div>
   </div>
@@ -406,11 +424,10 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
       </div>
     </div>
 
-    <!-- SETTINGS PAGE -->
+    <!-- SETTINGS -->
     <div class="page" id="pg-settings">
       <div style="padding:14px">
         <div style="font-family:var(--fh);font-size:18px;color:var(--text);margin-bottom:14px">Live Settings</div>
-
         <div class="crd" style="margin-bottom:12px">
           <div class="crd-t" style="margin-bottom:12px">Risk Controls</div>
           <div class="tog-row">
@@ -430,7 +447,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
             <input class="sr-inp" id="setDloss" type="number" value="5" min="1" max="50" onchange="updateSetting('max_daily_loss',this.value)">
           </div>
         </div>
-
         <div class="crd" style="margin-bottom:12px">
           <div class="crd-t" style="margin-bottom:12px">Features</div>
           <div class="tog-row">
@@ -442,7 +458,6 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
             <div class="tog on" id="botSw" onclick="toggleBot()"></div>
           </div>
         </div>
-
         <div class="crd">
           <div class="crd-t" style="margin-bottom:12px">Account</div>
           <div class="tog-row">
@@ -487,58 +502,68 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
 
 <script>
 const API = window.location.origin;
-
-// ── DEFAULTS ─────────────────────────────────────────────────
 const DEFAULTS = {risk:'2', lev:'2', dloss:'5', trail:'10', mode:'medium'};
-
-// ── Load saved values from localStorage ──────────────────────
 function getSaved(key){ return localStorage.getItem('apex_'+key) || DEFAULTS[key]; }
 function save(key,val){ localStorage.setItem('apex_'+key, val); }
+let cfg = {}, startBal = 0;
 
-// cfg built fresh from localStorage every connect
-let cfg = {};
-let startBal = 0;
-
-// ── CHIP SELECTION ───────────────────────────────────────────
-function setChip(el){
-  const group = el.dataset.group;
-  const val   = el.dataset.val;
-  // Deselect all in same group
-  document.querySelectorAll(`.chip[data-group="${group}"]`).forEach(c=>c.classList.remove('on'));
-  el.classList.add('on');
-  save(group, val);
-  updateBadges();
+// ── Score helpers ─────────────────────────────────────────────
+function scoreClass(score){
+  if(score >= 80) return 'vstrong';
+  if(score >= 65) return 'strong';
+  if(score >= 40) return 'medium';
+  return 'weak';
+}
+function scoreLabel(score, label){
+  // label comes from backend ("VERY STRONG" etc), score is 0-100
+  const icons = {weak:'○', medium:'◑', strong:'●', vstrong:'★'};
+  const cls   = scoreClass(score);
+  const icon  = icons[cls] || '●';
+  const txt   = label || (cls === 'vstrong' ? 'VERY STRONG' : cls.toUpperCase());
+  return `<span class="score-badge ${cls}">${icon} ${txt} ${score}/100</span>`;
 }
 
+// ── TP chip row ───────────────────────────────────────────────
+function tpChips(p){
+  const tp1Hit = p.tp1_hit;
+  const tp2Hit = p.tp2_hit;
+  return `<div class="tp-chips">
+    <span class="tp-chip tp1 ${tp1Hit?'hit':''}">TP1 +${(p.tp1_pct||0).toFixed(0)}%</span>
+    <span class="tp-chip tp2 ${tp2Hit?'hit':''}">TP2 +${(p.tp2_pct||0).toFixed(0)}%</span>
+    <span class="tp-chip tp3">TP3 +${(p.tp3_pct||0).toFixed(0)}%</span>
+    <span class="tp-chip sl">SL -${(p.sl_pct||0).toFixed(0)}%</span>
+  </div>`;
+}
+
+// ── Chip selection ────────────────────────────────────────────
+function setChip(el){
+  const group = el.dataset.group, val = el.dataset.val;
+  document.querySelectorAll(`.chip[data-group="${group}"]`).forEach(c=>c.classList.remove('on'));
+  el.classList.add('on'); save(group, val); updateBadges();
+}
 function restoreChips(){
   ['risk','lev','dloss','trail'].forEach(g=>{
     const v = getSaved(g);
     document.querySelectorAll(`.chip[data-group="${g}"]`).forEach(c=>{
-      c.classList.toggle('on', c.dataset.val === v);
+      c.classList.toggle('on', c.dataset.val===v);
     });
   });
 }
-
 function buildCfg(key, sec){
   return {
-    api_key:       key,
-    api_secret:    sec,
-    risk_pct:      parseFloat(getSaved('risk')),
-    leverage:      parseInt(getSaved('lev')),
-    max_pos:       3,
-    max_daily_loss:parseFloat(getSaved('dloss')),
-    trail_pct:     parseFloat(getSaved('trail')),
-    use_mtf:       document.getElementById('togMtf').classList.contains('on'),
-    signal_mode:   getSaved('mode'),
+    api_key: key, api_secret: sec,
+    risk_pct:       parseFloat(getSaved('risk')),
+    leverage:       parseInt(getSaved('lev')),
+    max_pos:        3,
+    max_daily_loss: parseFloat(getSaved('dloss')),
+    trail_pct:      parseFloat(getSaved('trail')),
+    use_mtf:        document.getElementById('togMtf').classList.contains('on'),
+    signal_mode:    getSaved('mode'),
   };
 }
-
 function updateBadges(){
-  const r = getSaved('risk');
-  const l = getSaved('lev');
-  const t = getSaved('trail');
-  const m = getSaved('mode');
-  const el = (id)=>document.getElementById(id);
+  const r=getSaved('risk'), l=getSaved('lev'), t=getSaved('trail');
+  const el=id=>document.getElementById(id);
   if(el('fbRisk'))  el('fbRisk').textContent  = `💰 Risk ${r}%`;
   if(el('fbLev'))   el('fbLev').textContent   = `⚡ ${l}× Leverage`;
   if(el('fbTrail')) el('fbTrail').textContent = `📉 Trail ${t}%`;
@@ -552,177 +577,131 @@ function updateBadges(){
   if(el('setDloss'))el('setDloss').value= getSaved('dloss');
 }
 
-// ── CONNECT ──────────────────────────────────────────────────
+// ── Connect ───────────────────────────────────────────────────
 async function connect(silent=false){
-  const key = document.getElementById('iKey').value.trim();
-  const sec = document.getElementById('iSec').value.trim();
+  const key=document.getElementById('iKey').value.trim();
+  const sec=document.getElementById('iSec').value.trim();
   if(!key||!sec){ if(!silent) toast('Enter your Bybit API keys first','y'); return; }
-
-  const btn = document.getElementById('launchBtn');
+  const btn=document.getElementById('launchBtn');
   if(!silent){ btn.disabled=true; btn.textContent='Connecting…'; }
-
-  cfg = buildCfg(key, sec);
-
+  cfg=buildCfg(key,sec);
   try{
-    const res = await fetch(`${API}/api/connect`,{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(cfg)
-    });
-    const d = await res.json();
+    const res=await fetch(`${API}/api/connect`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    const d=await res.json();
     if(!d.ok) throw new Error(d.error||'Connection failed');
-
-    // Save keys
-    save('key', key); save('sec', sec);
-    startBal = d.balance;
-
+    save('key',key); save('sec',sec);
+    startBal=d.balance;
     document.getElementById('s-setup').classList.remove('on');
     document.getElementById('s-app').classList.add('on');
     updateBadges();
-
     if(!silent) toast(`✅ Connected! Balance: $${d.balance.toFixed(2)}`,'g');
     startPolling();
-
-    // Restore and apply saved mode
-    const m = getSaved('mode');
-    await setMode(m, true);
-
+    await setMode(getSaved('mode'), true);
   }catch(e){
-    if(!silent){
-      toast('❌ '+e.message,'r');
-      if(btn){ btn.disabled=false; btn.textContent='⚡ Connect & Start Futures Bot'; }
-    }
+    if(!silent){ toast('❌ '+e.message,'r'); if(btn){btn.disabled=false;btn.textContent='⚡ Connect & Start Futures Bot';} }
   }
 }
-
-// ── AUTO-CONNECT ON PAGE LOAD ────────────────────────────────
-window.addEventListener('load', async ()=>{
-  restoreChips();
-  updateBadges();
-
-  const k = getSaved('key');
-  const s = getSaved('sec');
-  if(k && k !== DEFAULTS.risk && s){
-    document.getElementById('iKey').value = k;
-    document.getElementById('iSec').value = s;
-    await connect(true);
-  }
+window.addEventListener('load', async()=>{
+  restoreChips(); updateBadges();
+  const k=getSaved('key'), s=getSaved('sec');
+  if(k && k!==DEFAULTS.risk && s){ document.getElementById('iKey').value=k; document.getElementById('iSec').value=s; await connect(true); }
 });
 
-// ── POLLING ──────────────────────────────────────────────────
-let pollTimer = null;
-function startPolling(){ poll(); pollTimer = setInterval(poll, 5000); }
-
+// ── Polling ───────────────────────────────────────────────────
+let pollTimer=null;
+function startPolling(){ poll(); pollTimer=setInterval(poll,5000); }
 async function poll(){
-  try{
-    const res = await fetch(`${API}/api/status`);
-    if(!res.ok) return;
-    render(await res.json());
-  }catch(e){}
+  try{ const res=await fetch(`${API}/api/status`); if(!res.ok)return; render(await res.json()); }catch(e){}
 }
 
-// ── RENDER ───────────────────────────────────────────────────
+// ── Render ────────────────────────────────────────────────────
 function render(d){
-  const bal = d.balance||0;
-  document.getElementById('balAmt').textContent = '$'+bal.toFixed(2);
-
-  const tp = d.today_pnl||0;
-  const pe = document.getElementById('todayPnl');
-  pe.textContent = (tp>=0?'+$':'-$')+Math.abs(tp).toFixed(2);
-  pe.className   = 'ph-val '+(tp>0?'pos':tp<0?'neg':'');
-
+  const bal=d.balance||0;
+  document.getElementById('balAmt').textContent='$'+bal.toFixed(2);
+  const tp=d.today_pnl||0;
+  const pe=document.getElementById('todayPnl');
+  pe.textContent=(tp>=0?'+$':'-$')+Math.abs(tp).toFixed(2);
+  pe.className='ph-val '+(tp>0?'pos':tp<0?'neg':'');
   const ov=(d.positions||[]).reduce((a,p)=>a+(p.usdt_size||0)+(p.pnl||0),0);
-  document.getElementById('portVal').textContent = '$'+(bal+ov).toFixed(2);
-
+  document.getElementById('portVal').textContent='$'+(bal+ov).toFixed(2);
   const tot=(d.wins||0)+(d.losses||0);
-  document.getElementById('wr').textContent      = tot?Math.round(d.wins/tot*100)+'%':'—';
-  document.getElementById('tradesN').textContent = tot;
-  document.getElementById('longN').textContent   = d.stats?.long||0;
-  document.getElementById('shortN').textContent  = d.stats?.short||0;
-  document.getElementById('sSig').textContent    = d.stats?.signals||0;
-  document.getElementById('sLong').textContent   = d.stats?.long||0;
-  document.getElementById('sShort').textContent  = d.stats?.short||0;
-  document.getElementById('posLbl').textContent  = (d.positions||[]).length+' active';
-
-  // Daily loss bar
-  const dlp    = d.daily_loss_pct||0;
-  const maxDl  = d.max_daily_loss||5;
-  const fillPct= Math.min(dlp/maxDl*100, 100);
-  const fill   = document.getElementById('dlossFill');
-  fill.style.width      = fillPct+'%';
-  fill.style.background = fillPct>80?'var(--red)':fillPct>50?'#f59e0b':'var(--green)';
-  document.getElementById('dlossPct').textContent = dlp.toFixed(1)+'%';
-
-  // Daily loss alert
-  document.getElementById('dlossAlert').style.display = d.daily_loss_hit?'flex':'none';
-
-  // Bot badge
-  const badge = document.getElementById('botBadge');
-  const btxt  = document.getElementById('badgeTxt');
-  if(d.daily_loss_hit){ badge.className='bbadge warn'; btxt.textContent='PAUSED'; }
-  else if(d.bot_on)   { badge.className='bbadge';      btxt.textContent='LIVE';   }
-  else                { badge.className='bbadge off';  btxt.textContent='STOPPED';}
-
-  // Sync MTF badge
+  document.getElementById('wr').textContent=tot?Math.round(d.wins/tot*100)+'%':'—';
+  document.getElementById('tradesN').textContent=tot;
+  document.getElementById('longN').textContent=d.stats?.long||0;
+  document.getElementById('shortN').textContent=d.stats?.short||0;
+  document.getElementById('sSig').textContent=d.stats?.signals||0;
+  document.getElementById('sLong').textContent=d.stats?.long||0;
+  document.getElementById('sShort').textContent=d.stats?.short||0;
+  document.getElementById('posLbl').textContent=(d.positions||[]).length+' active';
+  const dlp=d.daily_loss_pct||0, maxDl=d.max_daily_loss||5;
+  const fillPct=Math.min(dlp/maxDl*100,100);
+  const fill=document.getElementById('dlossFill');
+  fill.style.width=fillPct+'%';
+  fill.style.background=fillPct>80?'var(--red)':fillPct>50?'#f59e0b':'var(--green)';
+  document.getElementById('dlossPct').textContent=dlp.toFixed(1)+'%';
+  document.getElementById('dlossAlert').style.display=d.daily_loss_hit?'flex':'none';
+  const badge=document.getElementById('botBadge'), btxt=document.getElementById('badgeTxt');
+  if(d.daily_loss_hit){badge.className='bbadge warn';btxt.textContent='PAUSED';}
+  else if(d.bot_on)   {badge.className='bbadge';     btxt.textContent='LIVE';  }
+  else                {badge.className='bbadge off';  btxt.textContent='STOPPED';}
   if(d.use_mtf!==undefined){
-    document.getElementById('fbMtf').textContent = d.use_mtf?'🔬 MTF ON':'🔬 MTF OFF';
-    document.getElementById('shMtf').textContent = d.use_mtf?'ON':'OFF';
-    const tog = document.getElementById('setMtfTog');
-    if(tog) tog.classList.toggle('on', d.use_mtf);
+    document.getElementById('fbMtf').textContent=d.use_mtf?'🔬 MTF ON':'🔬 MTF OFF';
+    document.getElementById('shMtf').textContent=d.use_mtf?'ON':'OFF';
+    const tog=document.getElementById('setMtfTog'); if(tog) tog.classList.toggle('on',d.use_mtf);
   }
-
   renderPositions(d.positions||[]);
   renderTrades(d.trades||[]);
   renderAnalytics(d);
-
-  // Sync mode
   if(d.signal_mode){
-    ['lenient','medium','strict'].forEach(m=>{
-      document.getElementById('btn-'+m).classList.remove('on');
-    });
-    const ab = document.getElementById('btn-'+d.signal_mode);
-    if(ab) ab.classList.add('on');
-    document.getElementById('modeLbl').textContent   = d.signal_mode.toUpperCase();
-    document.getElementById('shModeLbl').textContent = d.signal_mode.toUpperCase();
-    document.getElementById('shMode').textContent    = d.mode_desc||'';
+    ['lenient','medium','strict'].forEach(m=>document.getElementById('btn-'+m).classList.remove('on'));
+    const ab=document.getElementById('btn-'+d.signal_mode); if(ab) ab.classList.add('on');
+    document.getElementById('modeLbl').textContent=d.signal_mode.toUpperCase();
+    document.getElementById('shModeLbl').textContent=d.signal_mode.toUpperCase();
+    document.getElementById('shMode').textContent=d.mode_desc||'';
   }
 }
 
 function renderPositions(positions){
-  const el = document.getElementById('posList');
-  if(!positions.length){
-    el.innerHTML='<div class="empty">No open positions.<br>Bot is scanning top 50 coins…</div>'; return;
-  }
-  el.innerHTML = positions.map(p=>{
-    const isLong = p.direction==='long';
-    const gc     = p.pnl>=0?'var(--green)':'var(--red)';
-    const sign   = p.pnl>=0?'+':'-';
-    const prog   = isLong
-      ? Math.min(Math.max((p.current-p.entry)/(p.tp2-p.entry)*100,0),100)
-      : Math.min(Math.max((p.entry-p.current)/(p.entry-p.tp2)*100,0),100);
-    const trailProg = isLong&&p.highest>p.entry
-      ? Math.min((p.highest-p.entry)/(p.tp1-p.entry)*100,100) : 0;
+  const el=document.getElementById('posList');
+  if(!positions.length){ el.innerHTML='<div class="empty">No open positions.<br>Bot is scanning top 50 coins…</div>'; return; }
+  el.innerHTML=positions.map(p=>{
+    const isLong=p.direction==='long';
+    const gc=p.pnl>=0?'var(--green)':'var(--red)';
+    const sign=p.pnl>=0?'+':'-';
+    const score=p.score||0, label=p.label||'';
+
+    // Progress bar: how far to TP3
+    const tp3=p.tp3||p.tp2;
+    const prog=isLong
+      ? Math.min(Math.max((p.current-p.entry)/(tp3-p.entry)*100,0),100)
+      : Math.min(Math.max((p.entry-p.current)/(p.entry-tp3)*100,0),100);
+    const trailProg=isLong&&p.highest>p.entry
+      ? Math.min((p.highest-p.entry)/(p.tp1-p.entry)*100,100):0;
+
     return `<div class="pos-c ${p.direction||'long'}">
       <div class="pc-top">
         <div class="pc-co">
           <div class="pc-dir ${p.direction||'long'}">${(p.direction||'LONG').toUpperCase()}</div>
           <span class="pc-sym">${p.symbol}</span>
           <span class="pc-lev">${p.leverage||2}×</span>
+          ${scoreLabel(score, label)}
         </div>
         <div>
           <div class="pc-pv" style="color:${gc}">${sign}$${Math.abs(p.pnl||0).toFixed(2)}</div>
           <div class="pc-pp" style="color:${gc}">${sign}${Math.abs(p.pnl_pct||0).toFixed(2)}%</div>
         </div>
       </div>
+      ${tpChips(p)}
       <div class="pc-g">
         <div class="pd-c"><div class="pd-l">Entry</div><div class="pd-v">$${(p.entry||0).toFixed(4)}</div></div>
         <div class="pd-c"><div class="pd-l">Current</div><div class="pd-v" style="color:${gc}">$${(p.current||p.entry||0).toFixed(4)}</div></div>
         <div class="pd-c"><div class="pd-l">Size</div><div class="pd-v">$${(p.usdt_size||0).toFixed(2)}</div></div>
       </div>
-      ${isLong&&p.highest>p.entry?`<div class="trail-lbl">📉 Trailing SL: $${(p.sl||0).toFixed(4)} (High: $${(p.highest||0).toFixed(4)})</div><div class="trail-bar"><div class="trail-fill" style="width:${trailProg}%"></div></div>`:''}
+      ${isLong&&p.highest>p.entry?`<div class="trail-lbl">📉 Trail SL: $${(p.sl||0).toFixed(4)} (High: $${(p.highest||0).toFixed(4)})</div><div class="trail-bar"><div class="trail-fill" style="width:${trailProg}%"></div></div>`:''}
       <div class="tp-w">
-        <div class="tp-t"><span>Progress to TP2</span><span style="color:var(--gold)">${isLong?'↑ LONG':'↓ SHORT'}</span></div>
+        <div class="tp-t"><span>Progress to TP3</span><span style="color:var(--gold)">${isLong?'↑ LONG':'↓ SHORT'}</span></div>
         <div class="tp-tr"><div class="tp-fi ${p.direction||'long'}" style="width:${prog}%"></div></div>
-        <div class="tp-ti"><span>Entry</span><span>TP1</span><span>TP2</span></div>
+        <div class="tp-ti"><span>Entry</span><span>TP1 +${(p.tp1_pct||0).toFixed(0)}%</span><span>TP2 +${(p.tp2_pct||0).toFixed(0)}%</span><span>TP3 +${(p.tp3_pct||0).toFixed(0)}%</span></div>
       </div>
       <button class="cl-btn" onclick="closePos('${p.symbol}')">Close Position Manually</button>
     </div>`;
@@ -730,17 +709,25 @@ function renderPositions(positions){
 }
 
 function renderTrades(trades){
-  const html = trades.slice(0,15).map(t=>{
-    const w    = t.result==='win';
-    const sign = t.pnl>=0?'+':'-';
-    const ago  = Math.round((Date.now()/1000-(t.close_ts||0))/60);
-    const dir  = (t.direction||'long').toUpperCase();
-    const dc   = t.direction==='long'?'var(--green)':'var(--red)';
+  const html=trades.slice(0,15).map(t=>{
+    const w=t.result==='win';
+    const sign=t.pnl>=0?'+':'-';
+    const ago=Math.round((Date.now()/1000-(t.close_ts||0))/60);
+    const dir=(t.direction||'long').toUpperCase();
+    const dc=t.direction==='long'?'var(--green)':'var(--red)';
+    const score=t.score||0, label=t.label||'';
+    // which TP was hit
+    const tpHit = t.tp2_hit ? 'TP3' : t.tp1_hit ? 'TP2' : t.result==='win' ? 'TP1' : 'SL';
     return `<div class="tr-row">
       <div class="tr-ic ${w?'w':'l'}">${w?'✅':'🔴'}</div>
       <div class="tr-inf">
-        <div class="tr-sy">${t.symbol} <span style="font-size:10px;color:${dc};font-family:var(--fm)">${dir}</span></div>
-        <div class="tr-de">${w?'Target reached':'Stop loss hit'} · ${(t.pnl_pct||0).toFixed(1)}%</div>
+        <div class="tr-sy">
+          ${t.symbol}
+          <span style="font-size:10px;color:${dc};font-family:var(--fm)">${dir}</span>
+          ${score>0?scoreLabel(score,label):''}
+        </div>
+        <div class="tr-de">${w?'Closed at '+tpHit:'Stop loss hit'} · ${Math.abs(t.pnl_pct||0).toFixed(1)}%
+          · TP1 +${(t.tp1_pct||0).toFixed(0)}% / TP2 +${(t.tp2_pct||0).toFixed(0)}% / TP3 +${(t.tp3_pct||0).toFixed(0)}%</div>
       </div>
       <div class="tr-pn">
         <div class="tr-pv ${w?'w':'l'}">${sign}$${Math.abs(t.pnl||0).toFixed(2)}</div>
@@ -748,118 +735,92 @@ function renderTrades(trades){
       </div>
     </div>`;
   }).join('')||'<div class="empty">No trades yet</div>';
-  document.getElementById('tradeList').innerHTML = html;
-  document.getElementById('aList').innerHTML     = html;
+  document.getElementById('tradeList').innerHTML=html;
+  document.getElementById('aList').innerHTML=html;
 }
 
 function renderAnalytics(d){
-  const tp   = d.total_pnl||0;
-  const sign = tp>=0?'+':'-';
-  document.getElementById('aPnl').textContent    = sign+'$'+Math.abs(tp).toFixed(2);
-  document.getElementById('aPnl').style.color    = tp>=0?'var(--gold2)':'var(--red)';
-  const pct = startBal?(tp/startBal*100).toFixed(1):'0.0';
-  document.getElementById('aPnlPct').textContent = (tp>=0?'+':'')+pct+'%';
-  const tot = (d.wins||0)+(d.losses||0);
-  document.getElementById('aWr').textContent     = tot?Math.round(d.wins/tot*100)+'%':'—';
-  document.getElementById('aWl').textContent     = `${d.wins||0}W / ${d.losses||0}L`;
-  const wins   = (d.trades||[]).filter(t=>t.result==='win');
-  const losses = (d.trades||[]).filter(t=>t.result==='loss');
-  document.getElementById('aAW').textContent    = wins.length?'+$'+(wins.reduce((a,t)=>a+t.pnl,0)/wins.length).toFixed(2):'—';
-  document.getElementById('aAL').textContent    = losses.length?'-$'+Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length).toFixed(2):'—';
-  document.getElementById('aLong').textContent  = d.stats?.long||0;
-  document.getElementById('aShort').textContent = d.stats?.short||0;
+  const tp=d.total_pnl||0, sign=tp>=0?'+':'-';
+  document.getElementById('aPnl').textContent=sign+'$'+Math.abs(tp).toFixed(2);
+  document.getElementById('aPnl').style.color=tp>=0?'var(--gold2)':'var(--red)';
+  const pct=startBal?(tp/startBal*100).toFixed(1):'0.0';
+  document.getElementById('aPnlPct').textContent=(tp>=0?'+':'')+pct+'%';
+  const tot=(d.wins||0)+(d.losses||0);
+  document.getElementById('aWr').textContent=tot?Math.round(d.wins/tot*100)+'%':'—';
+  document.getElementById('aWl').textContent=`${d.wins||0}W / ${d.losses||0}L`;
+  const wins=(d.trades||[]).filter(t=>t.result==='win');
+  const losses=(d.trades||[]).filter(t=>t.result==='loss');
+  document.getElementById('aAW').textContent=wins.length?'+$'+(wins.reduce((a,t)=>a+t.pnl,0)/wins.length).toFixed(2):'—';
+  document.getElementById('aAL').textContent=losses.length?'-$'+Math.abs(losses.reduce((a,t)=>a+t.pnl,0)/losses.length).toFixed(2):'—';
+  document.getElementById('aLong').textContent=d.stats?.long||0;
+  document.getElementById('aShort').textContent=d.stats?.short||0;
 }
 
-// ── ACTIONS ──────────────────────────────────────────────────
+// ── Actions ───────────────────────────────────────────────────
 async function closePos(symbol){
   if(!confirm(`Close ${symbol} at market price?`)) return;
   try{
-    const res = await fetch(`${API}/api/close/${symbol}`,{method:'POST'});
-    const d   = await res.json();
+    const res=await fetch(`${API}/api/close/${symbol}`,{method:'POST'});
+    const d=await res.json();
     if(!d.ok) throw new Error(d.error);
-    toast(`Closed ${symbol}`, d.pnl>=0?'g':'y'); poll();
+    toast(`Closed ${symbol}`,d.pnl>=0?'g':'y'); poll();
   }catch(e){ toast('❌ '+e.message,'r'); }
 }
-
 async function toggleBot(){
-  const res = await fetch(`${API}/api/bot/toggle`,{method:'POST'});
-  const d   = await res.json();
-  ['botSw','shBotSw'].forEach(id=>{
-    const el = document.getElementById(id);
-    if(el) el.classList.toggle('on', d.bot_on);
-  });
-  toast(d.bot_on?'▶ Bot resumed':'⏸ Bot paused', d.bot_on?'g':'y');
+  const res=await fetch(`${API}/api/bot/toggle`,{method:'POST'});
+  const d=await res.json();
+  ['botSw','shBotSw'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.toggle('on',d.bot_on);});
+  toast(d.bot_on?'▶ Bot resumed':'⏸ Bot paused',d.bot_on?'g':'y');
 }
-
 async function resetDaily(){
   await fetch(`${API}/api/reset_daily`,{method:'POST'});
   document.getElementById('dlossAlert').style.display='none';
   toast('Daily counter reset','g'); poll();
 }
-
 async function toggleMtf(){
-  const tog = document.getElementById('setMtfTog');
-  tog.classList.toggle('on');
-  const on = tog.classList.contains('on');
-  await fetch(`${API}/api/settings`,{
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({use_mtf: on})
-  });
-  document.getElementById('fbMtf').textContent = on?'🔬 MTF ON':'🔬 MTF OFF';
-  document.getElementById('shMtf').textContent = on?'ON':'OFF';
+  const tog=document.getElementById('setMtfTog'); tog.classList.toggle('on');
+  const on=tog.classList.contains('on');
+  await fetch(`${API}/api/settings`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_mtf:on})});
+  document.getElementById('fbMtf').textContent=on?'🔬 MTF ON':'🔬 MTF OFF';
+  document.getElementById('shMtf').textContent=on?'ON':'OFF';
   toast('MTF '+(on?'enabled':'disabled'),'y');
 }
-
-async function updateSetting(key, val){
-  const body = {}; body[key] = parseFloat(val)||parseInt(val)||val;
-  await fetch(`${API}/api/settings`,{
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  // Also save locally
-  if(key==='risk_pct')      { save('risk', val);  document.getElementById('fbRisk').textContent=`💰 Risk ${val}%`; document.getElementById('shRisk').textContent=val+'%'; }
-  if(key==='trail_pct')     { save('trail',val);  document.getElementById('fbTrail').textContent=`📉 Trail ${val}%`; document.getElementById('shTrail').textContent=val+'%'; }
-  if(key==='max_daily_loss'){ save('dloss',val);  document.getElementById('shDloss').textContent=val+'%'; }
+async function updateSetting(key,val){
+  const body={}; body[key]=parseFloat(val)||parseInt(val)||val;
+  await fetch(`${API}/api/settings`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(key==='risk_pct')       {save('risk',val); document.getElementById('fbRisk').textContent=`💰 Risk ${val}%`; document.getElementById('shRisk').textContent=val+'%';}
+  if(key==='trail_pct')      {save('trail',val);document.getElementById('fbTrail').textContent=`📉 Trail ${val}%`;document.getElementById('shTrail').textContent=val+'%';}
+  if(key==='max_daily_loss') {save('dloss',val);document.getElementById('shDloss').textContent=val+'%';}
   toast('Setting updated','y');
 }
-
-async function setMode(mode, silent=false){
+async function setMode(mode,silent=false){
   try{
-    const res = await fetch(`${API}/api/mode/${mode}`,{method:'POST'});
-    const d   = await res.json();
+    const res=await fetch(`${API}/api/mode/${mode}`,{method:'POST'});
+    const d=await res.json();
     if(!d.ok) throw new Error(d.error);
-    save('mode', mode);
-    ['lenient','medium','strict'].forEach(m=>{
-      document.getElementById('btn-'+m).classList.remove('on');
-    });
+    save('mode',mode);
+    ['lenient','medium','strict'].forEach(m=>document.getElementById('btn-'+m).classList.remove('on'));
     document.getElementById('btn-'+mode).classList.add('on');
-    document.getElementById('modeLbl').textContent   = mode.toUpperCase();
-    document.getElementById('shModeLbl').textContent = mode.toUpperCase();
-    const descs = {
-      lenient:'🟢 Lenient — EMA9/21/50 · Supertrend · More signals',
-      medium: '🟡 Medium — EMA13/34/100 · MACD + Volume · Balanced',
-      strict: '🔴 Strict — EMA13/34/200 · All filters · Fewer signals',
-    };
-    document.getElementById('modeDescBar').textContent = descs[mode];
-    document.getElementById('shMode').textContent      = descs[mode];
-    if(!silent) toast(`Mode: ${mode.toUpperCase()}`, mode==='lenient'?'g':mode==='medium'?'y':'r');
+    document.getElementById('modeLbl').textContent=mode.toUpperCase();
+    document.getElementById('shModeLbl').textContent=mode.toUpperCase();
+    const descs={lenient:'🟢 Lenient — EMA9/21/50 · Supertrend · More signals',medium:'🟡 Medium — EMA13/34/100 · MACD + Volume · Balanced',strict:'🔴 Strict — EMA13/34/200 · All filters · Fewer signals'};
+    document.getElementById('modeDescBar').textContent=descs[mode];
+    document.getElementById('shMode').textContent=descs[mode];
+    if(!silent) toast(`Mode: ${mode.toUpperCase()}`,mode==='lenient'?'g':mode==='medium'?'y':'r');
   }catch(e){ if(!silent) toast('❌ '+e.message,'r'); }
 }
-
 function goPage(name,nav){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.bn').forEach(n=>n.classList.remove('on'));
-  document.getElementById('pg-'+name).classList.add('on');
-  nav.classList.add('on');
+  document.getElementById('pg-'+name).classList.add('on'); nav.classList.add('on');
 }
-function openSheet() { document.getElementById('sheet').style.display='block'; }
-function closeSheet(){ document.getElementById('sheet').style.display='none'; }
-
+function openSheet(){document.getElementById('sheet').style.display='block';}
+function closeSheet(){document.getElementById('sheet').style.display='none';}
 let toastT;
-function toast(msg, cls=''){
-  const el = document.getElementById('toast');
-  el.textContent = msg; el.className = 'on '+(cls||'');
-  clearTimeout(toastT); toastT = setTimeout(()=>el.className='', 3500);
+function toast(msg,cls=''){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.className='on '+(cls||'');
+  clearTimeout(toastT); toastT=setTimeout(()=>el.className='',3500);
 }
 </script>
 </body>
