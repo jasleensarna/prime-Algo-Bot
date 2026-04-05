@@ -13,8 +13,161 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn, os, time, asyncio, hmac, hashlib, urllib.parse, json, random
 import httpx
+try:
+    import asyncpg
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
 
 app = FastAPI()
+
+# ══════════════════════════════════════════════════════════════
+#  PERSISTENT DATABASE — PostgreSQL via Railway
+#  Falls back to in-memory if DATABASE_URL not set.
+#  Every closed trade is saved permanently — survives restarts,
+#  redeploys, and Railway sleeps.
+# ══════════════════════════════════════════════════════════════
+DB_URL = os.getenv("DATABASE_URL", "")
+_db_pool = None
+
+async def db_connect():
+    """Create connection pool to Postgres on startup."""
+    global _db_pool
+    if not HAS_DB or not DB_URL:
+        print("⚠️  No DATABASE_URL — trade history will NOT persist across restarts")
+        return
+    try:
+        # Railway uses postgres:// but asyncpg needs postgresql://
+        url = DB_URL.replace("postgres://", "postgresql://", 1)
+        _db_pool = await asyncpg.create_pool(url, min_size=1, max_size=5)
+        await db_init()
+        print("✅ PostgreSQL connected — trade history will persist forever")
+    except Exception as e:
+        print(f"⚠️  DB connect failed ({e}) — falling back to in-memory only")
+
+async def db_init():
+    """Create trades table if it doesn't exist yet."""
+    if not _db_pool: return
+    async with _db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id          SERIAL PRIMARY KEY,
+                symbol      TEXT NOT NULL,
+                direction   TEXT NOT NULL,
+                result      TEXT NOT NULL,
+                entry       DOUBLE PRECISION,
+                exit_price  DOUBLE PRECISION,
+                pnl         DOUBLE PRECISION,
+                pnl_pct     DOUBLE PRECISION,
+                usdt_size   DOUBLE PRECISION,
+                leverage    INTEGER,
+                tp1_pct     DOUBLE PRECISION,
+                tp2_pct     DOUBLE PRECISION,
+                tp3_pct     DOUBLE PRECISION,
+                sl_pct      DOUBLE PRECISION,
+                score       INTEGER,
+                label       TEXT,
+                mode        TEXT,
+                tp1_hit     BOOLEAN DEFAULT FALSE,
+                tp2_hit     BOOLEAN DEFAULT FALSE,
+                close_ts    BIGINT,
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        # Stats table — single row, upserted on every trade
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_stats (
+                id          INTEGER PRIMARY KEY DEFAULT 1,
+                wins        INTEGER DEFAULT 0,
+                losses      INTEGER DEFAULT 0,
+                total_pnl   DOUBLE PRECISION DEFAULT 0,
+                long_count  INTEGER DEFAULT 0,
+                short_count INTEGER DEFAULT 0,
+                traded      INTEGER DEFAULT 0,
+                updated_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO bot_stats (id) VALUES (1)
+            ON CONFLICT (id) DO NOTHING
+        """)
+    print("DB tables ready")
+
+async def db_save_trade(pos: dict, result: str, exit_price: float):
+    """Insert one closed trade into Postgres."""
+    if not _db_pool: return
+    try:
+        async with _db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO trades
+                  (symbol, direction, result, entry, exit_price, pnl, pnl_pct,
+                   usdt_size, leverage, tp1_pct, tp2_pct, tp3_pct, sl_pct,
+                   score, label, mode, tp1_hit, tp2_hit, close_ts)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+            """,
+                pos.get("symbol"),
+                pos.get("direction"),
+                result,
+                pos.get("entry", 0),
+                exit_price,
+                pos.get("pnl", 0),
+                pos.get("pnl_pct", 0),
+                pos.get("usdt_size", 0),
+                pos.get("leverage", 2),
+                pos.get("tp1_pct", 0),
+                pos.get("tp2_pct", 0),
+                pos.get("tp3_pct", 0),
+                pos.get("sl_pct", 0),
+                pos.get("score", 0),
+                pos.get("label", ""),
+                pos.get("mode", ""),
+                bool(pos.get("tp1_hit", False)),
+                bool(pos.get("tp2_hit", False)),
+                int(time.time()),
+            )
+            # Update running stats
+            wins_delta   = 1 if result == "win" else 0
+            losses_delta = 1 if result == "loss" else 0
+            long_delta   = 1 if pos.get("direction") == "long" else 0
+            short_delta  = 1 if pos.get("direction") == "short" else 0
+            await conn.execute("""
+                UPDATE bot_stats SET
+                    wins        = wins + $1,
+                    losses      = losses + $2,
+                    total_pnl   = total_pnl + $3,
+                    long_count  = long_count + $4,
+                    short_count = short_count + $5,
+                    traded      = traded + 1,
+                    updated_at  = NOW()
+                WHERE id = 1
+            """, wins_delta, losses_delta, pos.get("pnl", 0), long_delta, short_delta)
+    except Exception as e:
+        print(f"DB save trade error: {e}")
+
+async def db_load_trades(limit: int = 50) -> list:
+    """Load most recent trades from Postgres on startup."""
+    if not _db_pool: return []
+    try:
+        async with _db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM trades ORDER BY close_ts DESC LIMIT $1
+            """, limit)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"DB load trades error: {e}")
+        return []
+
+async def db_load_stats() -> dict:
+    """Load cumulative stats from Postgres."""
+    if not _db_pool: return {}
+    try:
+        async with _db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM bot_stats WHERE id = 1")
+            return dict(row) if row else {}
+    except Exception as e:
+        print(f"DB load stats error: {e}")
+        return {}
+
 
 state = {
     "api_key":    os.getenv("BYBIT_API_KEY", ""),
@@ -469,6 +622,35 @@ def get_dynamic_tp_sl(score, entry, signal):
     }
 
 
+def get_dynamic_position_size(score: int, balance: float) -> float:
+    """
+    Map signal strength score → USDT position size.
+    Leverage stays fixed at 2× for all trades.
+    Stronger signal = more capital deployed, same liquidation risk.
+
+    Score bands match get_dynamic_tp_sl() exactly so they're consistent:
+      WEAK        0-39  → 10% of balance  (floor: $10)
+      MEDIUM     40-64  → 15% of balance  (floor: $15)
+      STRONG     65-79  → 20% of balance  (floor: $20)
+      VERY STRONG 80+   → 25% of balance  (floor: $25)
+
+    Hard cap: never more than 30% of balance on a single trade.
+    """
+    if score >= 80:
+        pct = 25.0
+    elif score >= 65:
+        pct = 20.0
+    elif score >= 40:
+        pct = 15.0
+    else:
+        pct = 10.0
+
+    size = balance * pct / 100
+    floor = max(10.0, pct * 0.4)   # minimum floor scales with pct
+    cap   = balance * 0.30          # hard cap 30% of balance
+    return round(min(max(size, floor), cap), 2)
+
+
 # ── SCANNER ───────────────────────────────────────────────────
 async def scan_once():
     if state["daily_loss_hit"]:
@@ -488,11 +670,10 @@ async def scan_once():
                 state["pending"] = [s for s in state["pending"] if s["symbol"] != sig["symbol"]]
                 continue
             try:
-                # ── Position size: fixed $ or % of balance ──
-                if state["use_fixed_size"]:
-                    usdt = max(state["position_size_usdt"], MIN_ORDER)
-                else:
-                    usdt = max(state["balance"] * state["risk_pct"] / 100, MIN_ORDER)
+                # ── Dynamic position size based on signal score ──
+                score = sig.get("score", 50)
+                usdt  = get_dynamic_position_size(score, state["balance"])
+                usdt  = max(usdt, MIN_ORDER)
                 await execute_trade(sig["symbol"], sig["direction"], usdt, sig["atr"], sig["price"])
                 state["pending"] = [s for s in state["pending"] if s["symbol"] != sig["symbol"]]
             except Exception as e:
@@ -546,6 +727,9 @@ async def analyse(symbol):
         score   = calc_signal_strength(signal, details, ctx, mtf_ok)
         tp_sl   = get_dynamic_tp_sl(score, price, signal)
 
+        # Pre-calculate position size so the log shows it clearly
+        est_size = get_dynamic_position_size(score, state["balance"])
+
         state["pending"].append({
             "symbol":    symbol,
             "direction": signal,
@@ -560,6 +744,7 @@ async def analyse(symbol):
             "sl_pct":  tp_sl["sl_pct"],
             "score":   score,
             "label":   tp_sl["label"],
+            "est_size": est_size,
             "atr":       atr_val,
             "rsi":       details.get("rsi", 0),
             "vol":       details.get("vol_ratio", 0),
@@ -571,6 +756,7 @@ async def analyse(symbol):
         })
         state["stats"]["signals"] += 1
         print(f"SIGNAL [{tp_sl['label']}·{score}/100] {signal.upper()} {symbol} "
+              f"size=${est_size:.0f} "
               f"TP1=+{tp_sl['tp1_pct']}% TP2=+{tp_sl['tp2_pct']}% "
               f"TP3=+{tp_sl['tp3_pct']}% SL=-{tp_sl['sl_pct']}% "
               f"rsi={details.get('rsi')} vol={details.get('vol_ratio')}x "
@@ -792,15 +978,19 @@ async def close_position_and_record(symbol, result):
         qty_rem = pos.get("qty_remaining", pos["qty"])
         await close_futures_position(symbol, pos["direction"], qty_rem)
         await cancel_all_orders(symbol)
-        pnl = pos["pnl"]
+        pnl       = pos["pnl"]
+        exit_price = pos.get("current", pos.get("entry", 0))
         state["today_pnl"] += pnl
         state["total_pnl"] += pnl
         if result == "win": state["wins"] += 1
         else: state["losses"] += 1
-        state["trades"].insert(0, {**pos, "result": result, "close_ts": int(time.time())})
+        trade = {**pos, "result": result, "close_ts": int(time.time())}
+        state["trades"].insert(0, trade)
         del state["positions"][symbol]
         state["balance"] = await get_balance()
         print(f"{result.upper()}: {symbol} pnl={pnl:.2f}")
+        # ── Save to Postgres permanently ──
+        await db_save_trade(trade, result, exit_price)
     except Exception as e:
         print(f"Close error {symbol}: {e}")
 
@@ -824,6 +1014,26 @@ async def bot_loop():
 
 @app.on_event("startup")
 async def startup():
+    # ── Connect to Postgres first ──
+    await db_connect()
+
+    # ── Load persisted trade history into memory ──
+    saved = await db_load_trades(100)
+    if saved:
+        state["trades"] = saved
+        print(f"Loaded {len(saved)} trades from database")
+
+    # ── Restore cumulative stats ──
+    stats = await db_load_stats()
+    if stats:
+        state["wins"]      = stats.get("wins", 0)
+        state["losses"]    = stats.get("losses", 0)
+        state["total_pnl"] = stats.get("total_pnl", 0.0)
+        state["stats"]["traded"] = stats.get("traded", 0)
+        state["stats"]["long"]   = stats.get("long_count", 0)
+        state["stats"]["short"]  = stats.get("short_count", 0)
+        print(f"Restored stats: W={state['wins']} L={state['losses']} PnL=${state['total_pnl']:.2f}")
+
     print(f"APEX Pro starting — key: {bool(state['api_key'])}")
     if state["api_key"]:
         try:
