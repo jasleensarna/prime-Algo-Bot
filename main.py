@@ -1,17 +1,23 @@
 “””
-APEX Pro — Bybit Linear Futures
+APEX Pro – Bybit Linear Futures
 Lead Indicator Edition: Order Book Imbalance + Trade Flow + Funding Momentum
 Dynamic TP1/TP2/TP3, dynamic position sizing, all-coins scanner, Postgres persistence
 “””
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn, os, time, asyncio, hmac, hashlib, urllib.parse, json, random
+
+try:
 import httpx
+except ImportError as e:
+raise ImportError(f”httpx not found: {e}. Check requirements.txt”)
+
 try:
 import asyncpg
 HAS_DB = True
-except ImportError:
+except (ImportError, Exception):
 HAS_DB = False
+asyncpg = None
 
 app = FastAPI()
 
@@ -27,15 +33,15 @@ _db_pool = None
 async def db_connect():
 global _db_pool
 if not HAS_DB or not DB_URL:
-print(“⚠️  No DATABASE_URL — history will not persist”)
+print(“⚠️  No DATABASE_URL – history will not persist”)
 return
 try:
 url      = DB_URL.replace(“postgres://”, “postgresql://”, 1)
 _db_pool = await asyncpg.create_pool(url, min_size=1, max_size=5)
 await db_init()
-print(“✅ PostgreSQL connected — trade history will persist forever”)
+print(“✅ PostgreSQL connected – trade history will persist forever”)
 except Exception as e:
-print(f”⚠️  DB connect failed ({e}) — in-memory only”)
+print(f”⚠️  DB connect failed ({e}) – in-memory only”)
 
 async def db_init():
 if not _db_pool: return
@@ -138,7 +144,7 @@ state = {
 “use_mtf”:        False,
 }
 
-TOP50    = []   # populated dynamically — all Bybit USDT perpetuals
+TOP50    = []   # populated dynamically – all Bybit USDT perpetuals
 BYBIT    = “https://api.bybit.com”
 MIN_ORDER = 10.0
 
@@ -230,7 +236,7 @@ return TOP50 or [“BTCUSDT”,“ETHUSDT”,“SOLUSDT”,“BNBUSDT”,“XRPU
 
 # LEAD INDICATORS
 
-# Predict the candle — don’t react to it
+# Predict the candle – don’t react to it
 
 # ══════════════════════════════════════════════════════════════
 
@@ -389,7 +395,7 @@ return score, label
 
 # ══════════════════════════════════════════════════════════════
 
-# DYNAMIC TP/SL — score-driven
+# DYNAMIC TP/SL – score-driven
 
 # ══════════════════════════════════════════════════════════════
 
@@ -409,7 +415,7 @@ return {“tp1”:tp1,“tp2”:tp2,“tp3”:tp3,“sl”:sl,
 
 # ══════════════════════════════════════════════════════════════
 
-# DYNAMIC POSITION SIZE — score-driven, leverage fixed 2x
+# DYNAMIC POSITION SIZE – score-driven, leverage fixed 2x
 
 # ══════════════════════════════════════════════════════════════
 
@@ -425,7 +431,7 @@ return round(min(max(size, floor), cap), 2)
 
 # ══════════════════════════════════════════════════════════════
 
-# MARKET CONTEXT FILTERS (OI + Liquidations) — still active
+# MARKET CONTEXT FILTERS (OI + Liquidations) – still active
 
 # ══════════════════════════════════════════════════════════════
 
@@ -470,11 +476,11 @@ def market_context_allows(signal, ctx):
 oi  = ctx.get(“oi_trend”,“neutral”)
 liq = ctx.get(“liq_bias”,“neutral”)
 if signal==“long”:
-if oi==“falling” and liq!=“shorts_liq”: return False,“OI falling — weak rally”
+if oi==“falling” and liq!=“shorts_liq”: return False,“OI falling – weak rally”
 if liq==“shorts_liq”: return True,“shorts_liq ✅”
 return True, f”OI={oi}”
 if signal==“short”:
-if oi==“falling” and liq!=“longs_liq”: return False,“OI falling — weak drop”
+if oi==“falling” and liq!=“longs_liq”: return False,“OI falling – weak drop”
 if liq==“longs_liq”: return True,“longs_liq ✅”
 return True, f”OI={oi}”
 return True, “ok”
@@ -529,7 +535,7 @@ ctx = await get_market_context(symbol)
 allowed, reason = market_context_allows(direction, ctx)
 if not allowed: print(f”MARKET BLOCK {symbol} [{direction}]: {reason}”); return
 score, label = lead_signal_strength(direction, details)
-if score < 35: print(f”SCORE LOW {symbol}: {score}/100 — skip”); return
+if score < 35: print(f”SCORE LOW {symbol}: {score}/100 – skip”); return
 price = await get_price(symbol)
 if price <= 0: return
 tp_sl    = get_dynamic_tp_sl(score, price, direction)
@@ -573,7 +579,7 @@ side = “Buy” if direction==“long” else “Sell”
 score = sig.get(“score”,50) if sig else 50
 tp_sl = get_dynamic_tp_sl(score, price, direction)
 tp1,tp2,tp3,sl = tp_sl[“tp1”],tp_sl[“tp2”],tp_sl[“tp3”],tp_sl[“sl”]
-# Place order — SL on Bybit, TP managed by monitor loop
+# Place order – SL on Bybit, TP managed by monitor loop
 await place_futures_order(symbol, side, qty, sl=sl)
 if direction==“long”: state[“stats”][“long”]+=1
 else:                 state[“stats”][“short”]+=1
@@ -599,7 +605,7 @@ state[“balance”] = await get_balance()
 
 # ══════════════════════════════════════════════════════════════
 
-# POSITION MONITOR — every 5 seconds
+# POSITION MONITOR – every 5 seconds
 
 # TP1 (+x%) → close 40%
 
@@ -747,7 +753,7 @@ if state[“start_balance”]<=0: return
 loss_pct = (state[“start_balance”]-state[“balance”])/state[“start_balance”]*100
 if loss_pct >= state[“max_daily_loss”] and not state[“daily_loss_hit”]:
 state[“daily_loss_hit”] = True; state[“bot_on”] = False
-print(f”DAILY LOSS LIMIT HIT: {loss_pct:.1f}% — bot paused”)
+print(f”DAILY LOSS LIMIT HIT: {loss_pct:.1f}% – bot paused”)
 
 # ══════════════════════════════════════════════════════════════
 
@@ -756,7 +762,7 @@ print(f”DAILY LOSS LIMIT HIT: {loss_pct:.1f}% — bot paused”)
 # ══════════════════════════════════════════════════════════════
 
 async def bot_loop():
-print(“Bot loop started — Lead Indicator Edition”)
+print(“Bot loop started – Lead Indicator Edition”)
 while True:
 if state[“bot_on”] and state[“api_key”] and not state[“daily_loss_hit”]:
 await scan_once()
@@ -778,7 +784,7 @@ state[“stats”][“traded”] = stats.get(“traded”,0)
 state[“stats”][“long”]   = stats.get(“long_count”,0)
 state[“stats”][“short”]  = stats.get(“short_count”,0)
 print(f”Restored: W={state[‘wins’]} L={state[‘losses’]} PnL=${state[‘total_pnl’]:.2f}”)
-print(f”APEX Pro starting — key:{bool(state[‘api_key’])}”)
+print(f”APEX Pro starting – key:{bool(state[‘api_key’])}”)
 if state[“api_key”]:
 try:
 state[“balance”] = await get_balance()
@@ -811,7 +817,7 @@ state[“balance”]        = await get_balance()
 state[“start_balance”]  = state[“balance”]
 state[“daily_loss_hit”] = False
 state[“bot_on”]         = True
-print(f”Connected — balance: ${state[‘balance’]:.2f}”)
+print(f”Connected – balance: ${state[‘balance’]:.2f}”)
 return {“ok”:True,“balance”:state[“balance”]}
 
 @app.get(”/api/status”)
@@ -833,7 +839,7 @@ return {
 “use_mtf”:        False,
 “daily_loss_hit”: state[“daily_loss_hit”],
 “daily_loss_pct”: dlp,
-“positions”:      [{**p,“score”:p.get(“score”,0),“label”:p.get(“label”,”—”)} for p in state[“positions”].values()],
+“positions”:      [{**p,“score”:p.get(“score”,0),“label”:p.get(“label”,”–”)} for p in state[“positions”].values()],
 “trades”:         state[“trades”][:20],
 “pending”:        state[“pending”][:3],
 “stats”:          state[“stats”],
