@@ -1,8 +1,5 @@
-"""
-APEX Pro - Bybit Linear Futures
-Lead Indicator Edition: Order Book Imbalance + Trade Flow + Funding Momentum
-Dynamic TP1/TP2/TP3, dynamic position sizing, all-coins scanner, Postgres persistence
-“””
+# APEX Pro - Bybit Futures Bot
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn, os, time, asyncio, hmac, hashlib, urllib.parse, json, random
@@ -238,12 +235,6 @@ return TOP50 or [“BTCUSDT”,“ETHUSDT”,“SOLUSDT”,“BNBUSDT”,“XRPU
 # ============================================================
 
 async def get_orderbook_imbalance(symbol):
-“””
-OBI = bid_volume / (bid_volume + ask_volume) across top 50 levels.
-OBI > 0.65 = buyers dominating -> LONG
-OBI < 0.35 = sellers dominating -> SHORT
-Also checks bid/ask stacking near best price.
-“””
 try:
 d = await by_get(”/v5/market/orderbook”,{“category”:“linear”,“symbol”:symbol,“limit”:50})
 r = d.get(“result”,{})
@@ -269,11 +260,6 @@ except Exception as e:
 print(f”OBI error {symbol}: {e}”); return {“obi”:0.5,“signal”:“neutral”}
 
 async def get_trade_flow_aggression(symbol):
-“””
-Last 200 trades: buy volume vs sell volume.
-buy_ratio > 0.60 = aggressive buyers -> LONG
-buy_ratio < 0.40 = aggressive sellers -> SHORT
-“””
 try:
 d = await by_get(”/v5/market/recent-trade”,{“category”:“linear”,“symbol”:symbol,“limit”:200})
 trades = d.get(“result”,{}).get(“list”,[])
@@ -301,10 +287,6 @@ except Exception as e:
 print(f”Trade flow error {symbol}: {e}”); return {“buy_ratio”:0.5,“signal”:“neutral”,“trade_count”:0}
 
 async def get_funding_momentum(symbol):
-“””
-Funding rate momentum: accelerating negative = short squeeze coming = LONG
-Accelerating positive = long squeeze coming = SHORT
-“””
 try:
 td = await by_get(”/v5/market/tickers”,{“category”:“linear”,“symbol”:symbol})
 items   = td.get(“result”,{}).get(“list”,[])
@@ -322,10 +304,6 @@ except Exception as e:
 print(f”Funding error {symbol}: {e}”); return {“rate”:0,“avg”:0,“momentum”:0,“signal”:“neutral”}
 
 async def lead_signal(symbol):
-“””
-Run all 3 lead indicators in parallel.
-Need 2/3 agreement. OBI+Flow alone is enough (strongest combo).
-“””
 try:
 obi, flow, fund = await asyncio.gather(
 get_orderbook_imbalance(symbol),
@@ -356,7 +334,6 @@ details = {
 return direction, details
 
 def lead_signal_strength(direction, details):
-“”“Score 0-100 -> drives dynamic TP/SL and position size.”””
 score = 0
 obi       = details.get(“obi”, 0.5)
 buy_ratio = details.get(“buy_ratio”, 0.5)
