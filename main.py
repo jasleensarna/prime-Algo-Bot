@@ -1,4 +1,4 @@
-“””
+"""
 APEX Pro - Bybit Linear Futures
 Lead Indicator Edition: Order Book Imbalance + Trade Flow + Funding Momentum
 Dynamic TP1/TP2/TP3, dynamic position sizing, all-coins scanner, Postgres persistence
