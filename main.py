@@ -133,7 +133,8 @@ state = {
     "signal_log":     [],
     "start_balance":  0.0,
     "risk_pct":       2.0,
-    "signal_mode":    "lead",
+    "signal_mode":    "medium",
+    "min_score":      45,
     "use_mtf":        False,
 }
 
@@ -891,8 +892,9 @@ async def analyse(symbol):
             return
 
         score, label = score_signal(direction, details)
-        if score < 35:
-            print(f"SCORE LOW {symbol}: {score}/100 - skip")
+        min_score = state.get("min_score", 45)
+        if score < min_score:
+            print(f"SCORE LOW {symbol}: {score}/100 < {min_score} ({state.get("signal_mode","medium")}) - skip")
             return
 
         price = await get_price(symbol)
@@ -1248,8 +1250,11 @@ async def connect(req: Request):
     state["balance"]        = await get_balance()
     state["start_balance"]  = state["balance"]
     state["daily_loss_hit"] = False
+    state["signal_mode"]    = b.get("signal_mode", state.get("signal_mode", "medium"))
+    mode_scores = {"lenient": 30, "medium": 45, "strict": 60}
+    state["min_score"]      = mode_scores.get(state["signal_mode"], 45)
     state["bot_on"]         = True
-    print(f"Connected - balance: ${state['balance']:.2f}")
+    print(f"Connected - balance: ${state['balance']:.2f} mode={state['signal_mode']} min_score={state['min_score']}")
     return {"ok": True, "balance": state["balance"]}
 
 @app.get("/api/status")
@@ -1265,8 +1270,14 @@ async def get_status():
         "today_pnl":      round(state["today_pnl"], 2),
         "total_pnl":      round(state["total_pnl"], 2),
         "bot_on":         state["bot_on"],
-        "signal_mode":    "lead",
-        "mode_desc":      "OBI + Flow + CVD | Whale + Funding boosters",
+        "signal_mode":    "medium",
+    "min_score":      45,
+        "mode_desc":      {
+            "lenient": "Lenient - more signals, score >= 30",
+            "medium":  "Medium - balanced, score >= 45",
+            "strict":  "Strict - high conviction, score >= 60",
+        }.get(state["signal_mode"], "Medium - balanced, score >= 45"),
+        "min_score":      state.get("min_score", 45),
         "leverage":       state["leverage"],
         "trail_pct":      state["trail_pct"],
         "max_daily_loss": state["max_daily_loss"],
@@ -1294,11 +1305,17 @@ async def toggle():
 
 @app.post("/api/mode/{mode}")
 async def set_mode(mode: str):
-    return {
-        "ok":   True,
-        "mode": "lead",
-        "desc": "OBI + Flow + CVD | Whale + Funding boosters",
+    MODE_CONFIG = {
+        "lenient": {"min_score": 30,  "desc": "Lenient - more signals, lower conviction threshold"},
+        "medium":  {"min_score": 45,  "desc": "Medium - balanced (recommended)"},
+        "strict":  {"min_score": 60,  "desc": "Strict - high conviction only, fewer signals"},
     }
+    cfg = MODE_CONFIG.get(mode, MODE_CONFIG["medium"])
+    state["signal_mode"] = mode
+    state["min_score"]   = cfg["min_score"]
+    state["pending"]     = []  # clear pending signals on mode change
+    print(f"Mode: {mode.upper()} min_score={cfg['min_score']}")
+    return {"ok": True, "mode": mode, "desc": cfg["desc"]}
 
 @app.post("/api/settings")
 async def update_settings(req: Request):
