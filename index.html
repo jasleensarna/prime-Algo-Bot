@@ -379,18 +379,18 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
         <div class="mode-wrap">
           <div class="mode-btn lenient" id="btn-lenient" onclick="setMode('lenient')">
             <div class="mode-icon">🟢</div><div class="mode-name">Lenient</div>
-            <div class="mode-sub">Score >= 30<br>More trades</div>
+            <div class="mode-sub">Min score 30<br>More signals</div>
           </div>
           <div class="mode-btn medium on" id="btn-medium" onclick="setMode('medium')">
             <div class="mode-icon">🟡</div><div class="mode-name">Medium</div>
-            <div class="mode-sub">Score >= 45<br>Recommended</div>
+            <div class="mode-sub">Min score 45<br>Recommended</div>
           </div>
           <div class="mode-btn strict" id="btn-strict" onclick="setMode('strict')">
             <div class="mode-icon">🔴</div><div class="mode-name">Strict</div>
-            <div class="mode-sub">Score >= 60<br>High conviction</div>
+            <div class="mode-sub">Min score 60<br>Fewer trades</div>
           </div>
         </div>
-        <div class="mode-desc-bar" id="modeDescBar">🟡 Medium - Score >= 45 - Balanced - Recommended</div>
+        <div class="mode-desc-bar" id="modeDescBar">🟡 Medium - OBI + Flow + CVD | min score 45 | Recommended</div>
       </div>
 
       <div class="sec">
@@ -489,7 +489,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fn);font-size
     <div class="sh-h"></div>
     <div class="sh-t">Quick Settings</div>
     <div class="sr"><div><div class="sr-n">Auto-Trading</div><div class="sr-d">Bot active</div></div><div class="tog on" id="shBotSw" onclick="toggleBot()"></div></div>
-    <div class="sr"><div><div class="sr-n">Signal Mode</div><div class="sr-d" id="shMode">Medium</div></div><div class="sr-v" id="shModeLbl">MEDIUM</div></div>
+    <div class="sr"><div><div class="sr-n">Signal Mode</div><div class="sr-d" id="shMode">OBI + Flow + CVD | score >= 45</div></div><div class="sr-v" id="shModeLbl">MEDIUM</div></div>
     <div class="sr"><div><div class="sr-n">Risk Per Trade</div><div class="sr-d">% of balance</div></div><div class="sr-v" id="shRisk">2%</div></div>
     <div class="sr"><div><div class="sr-n">Leverage</div><div class="sr-d">Current multiplier</div></div><div class="sr-v" id="shLev">2×</div></div>
     <div class="sr"><div><div class="sr-n">Trailing SL</div><div class="sr-d">% below highest</div></div><div class="sr-v" id="shTrail">10%</div></div>
@@ -803,7 +803,7 @@ async function setMode(mode,silent=false){
     document.getElementById('btn-'+mode).classList.add('on');
     document.getElementById('modeLbl').textContent=mode.toUpperCase();
     document.getElementById('shModeLbl').textContent=mode.toUpperCase();
-    const descs={lenient:'🟢 Lenient - Score >= 30 - More signals, lower conviction',medium:'🟡 Medium - Score >= 45 - Balanced, recommended',strict:'🔴 Strict - Score >= 60 - High conviction only, fewer signals'};
+    const descs={lenient:'🟢 Lenient - OBI + Flow + CVD | Min score 30 | More signals',medium:'🟡 Medium - OBI + Flow + CVD | Min score 45 | Recommended',strict:'🔴 Strict - OBI + Flow + CVD | Min score 60 | High conviction only'};
     document.getElementById('modeDescBar').textContent=descs[mode];
     document.getElementById('shMode').textContent=descs[mode];
     if(!silent) toast(`Mode: ${mode.toUpperCase()}`,mode==='lenient'?'g':mode==='medium'?'y':'r');
