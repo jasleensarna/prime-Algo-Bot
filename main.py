@@ -13,7 +13,7 @@ app = FastAPI()
 API_KEY       = os.getenv("BYBIT_API_KEY", "")
 API_SECRET    = os.getenv("BYBIT_API_SECRET", "")
 BASE_URL      = "https://api.bybit.com"
-MIN_SCORE     = 75
+MIN_SCORE     = 70
 LEVERAGE      = 2
 SCAN_INTERVAL = 30
 
@@ -197,9 +197,10 @@ async def trend_gate(symbol,direction):
     c15=await get_klines(symbol,"15",60)
     c5 =await get_klines(symbol,"5", 30)
     if not c15 or not c5:return False,{"reason":"no data"}
+    # UT Bot + ADX>18 + VWAP — all 3 must pass
     ut=_ut_bot(c15);adx=_adx(c15);vwap=_vwap(c5);price=float(c5[-1][4])
     ut_ok  =ut==direction or ut=="neutral"
-    adx_ok =adx>=25
+    adx_ok =adx>=18
     vwap_ok=price>vwap if direction=="long" else price<vwap
     passed =ut_ok and adx_ok and vwap_ok
     info={"ut":ut,"adx":round(adx,1),"vwap":round(vwap,6),
@@ -208,7 +209,7 @@ async def trend_gate(symbol,direction):
     if not passed:
         fails=[]
         if not ut_ok:  fails.append(f"UT Bot={ut}")
-        if not adx_ok: fails.append(f"ADX={adx:.1f} (need>25)")
+        if not adx_ok: fails.append(f"ADX={adx:.1f}<18")
         if not vwap_ok:fails.append("Price on wrong side of VWAP")
         info["reason"]=" | ".join(fails)
     return passed,info
@@ -972,7 +973,7 @@ body {
   <div class="slbl">System</div>
   <div class="icard">
     <div class="ir"><span class="k">Balance</span><span class="v" id="ov-bal">—</span></div>
-    <div class="ir"><span class="k">Min Score</span><span class="v"><span class="badge b-pass">75 · STRONG</span></span></div>
+    <div class="ir"><span class="k">Min Score</span><span class="v"><span class="badge b-pass">70 · STRONG</span></span></div>
     <div class="ir"><span class="k">Trend Blocks</span><span class="v" id="ov-tb">—</span></div>
     <div class="ir"><span class="k">Score Blocks</span><span class="v" id="ov-sb">—</span></div>
     <div class="ir"><span class="k">Last Scan</span><span class="v" id="ov-ls">—</span></div>
@@ -1028,14 +1029,14 @@ body {
             <span class="pbar-val" id="ut-val">—</span>
           </div>
         </div>
-        <div class="pr"><span class="pr-key">ADX (14)</span><span class="pr-val" id="adx-val">—</span></div>
         <div class="pbar-wrap">
           <div class="pbar-top">
-            <span class="pbar-label">ADX Strength</span>
+            <span class="pbar-label">ADX (14) · need &gt;18</span>
             <span class="pbar-val" id="adx-num">—</span>
           </div>
           <div class="pbar"><div class="pbar-fill pbar-a" id="adx-bar" style="width:0%"></div></div>
         </div>
+        <div class="pr"><span class="pr-key">ADX Status</span><span class="pr-val" id="adx-val">—</span></div>
         <div class="pr"><span class="pr-key">VWAP</span><span class="pr-val" id="vwap-val">—</span></div>
         <div class="pr"><span class="pr-key">Price vs VWAP</span><span class="pr-val" id="pvwap-val">—</span></div>
         <div class="pr"><span class="pr-key">Gate Result</span><span class="pr-val" id="gate-result">—</span></div>
@@ -1353,8 +1354,8 @@ function renderSignal() {
   const adx = gate.adx || 0;
   document.getElementById('adx-val').innerHTML = badge(gate.adx_ok, 'TRENDING', 'CHOPPY');
   document.getElementById('adx-num').textContent = fmt(adx, 1);
-  document.getElementById('adx-bar').style.width = Math.min(adx / 50 * 100, 100) + '%';
-  document.getElementById('adx-bar').className = 'pbar-fill ' + (adx >= 25 ? 'pbar-g' : 'pbar-r');
+  document.getElementById('adx-bar').style.width = Math.min(adx / 40 * 100, 100) + '%';
+  document.getElementById('adx-bar').className = 'pbar-fill ' + (adx >= 18 ? 'pbar-g' : 'pbar-r');
 
   // VWAP
   document.getElementById('vwap-val').textContent = '$' + fmt(gate.vwap || 0, 4);
@@ -1517,7 +1518,8 @@ function renderScanLog() {
     const ageStr = age < 60 ? age+'s' : Math.floor(age/60)+'m';
 
     let detailRows = '';
-    if (gate.adx) detailRows += `<div class="sdrow"><span class="k">ADX</span><span class="v">${fmt(gate.adx,1)} ${gate.adx_ok?'✓ Trending':'✗ Choppy'}</span></div>`;
+    // ADX in gate detail
+    if (gate.adx && gate.adx !== 'removed') detailRows += `<div class="sdrow"><span class="k">ADX</span><span class="v">${fmt(gate.adx,1)} ${gate.adx_ok?'✓ Trending':'✗ <18 (choppy)'}</span></div>`;
     if (gate.ut)  detailRows += `<div class="sdrow"><span class="k">UT Bot</span><span class="v">${gate.ut.toUpperCase()} ${gate.ut_ok?'✓':''}</span></div>`;
     if (gate.vwap_ok !== undefined) detailRows += `<div class="sdrow"><span class="k">VWAP</span><span class="v">${gate.vwap_ok?'Price on right side ✓':'Wrong side of VWAP ✗'}</span></div>`;
     if (det.obi)  detailRows += `<div class="sdrow"><span class="k">OBI</span><span class="v">${fmt(det.obi_pct,1)}% bids · ${fmt(det.obi_pts,0)} pts</span></div>`;
