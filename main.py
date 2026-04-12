@@ -972,157 +972,545 @@ async def startup():
 # ═══════════════════════════════════════════════════════════════
 
 UI_HTML = """<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>APEX Pro v2</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>APEX Pro v2 — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0f;--card:#14141e;--border:#1e1e2e;--accent:#f0c040;--green:#3dffa0;--red:#ff4d6d;--text:#e8e8f0;--muted:#6b6b80}
-body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;padding:20px 16px 60px;max-width:480px;margin:0 auto}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--border)}
-.logo{font-family:'Space Mono',monospace;font-size:18px;font-weight:700}.logo span{color:var(--accent)}
-.badge{display:flex;align-items:center;gap:6px;background:rgba(61,255,160,.08);border:1px solid rgba(61,255,160,.2);border-radius:20px;padding:4px 12px;font-size:11px;font-family:'Space Mono',monospace;color:var(--green)}
-.dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
-.card-lbl{font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}
-.card-val{font-family:'Space Mono',monospace;font-size:22px;font-weight:700}
-.card-sub{font-size:11px;color:var(--muted);margin-top:3px}
-.green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--accent)}
-.sec{font-family:'Space Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
-.sec::after{content:'';flex:1;height:1px;background:var(--border)}
-.pos-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px}
-.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.pos-sym{font-family:'Space Mono',monospace;font-size:16px;font-weight:700}
-.pos-dir{font-size:11px;font-family:'Space Mono',monospace;padding:3px 10px;border-radius:4px}
-.long-bg{background:rgba(61,255,160,.12);color:var(--green)}
-.short-bg{background:rgba(255,77,109,.12);color:var(--red)}
-.tp-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-.tp-chip{font-size:10px;font-family:'Space Mono',monospace;padding:3px 9px;border-radius:12px;background:rgba(255,255,255,.06);color:var(--muted)}
-.tp-chip.hit{background:rgba(61,255,160,.15);color:var(--green)}
-.layers{background:rgba(255,255,255,.03);border-radius:10px;padding:12px;margin-top:10px;font-size:12px}
-.layer-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+:root{
+  --bg:#080810;
+  --s1:#0f0f1a;
+  --s2:#171724;
+  --border:#22223a;
+  --border2:#2e2e4a;
+  --gold:#e8b94a;
+  --gold2:#f5d27a;
+  --glow:rgba(232,185,74,.12);
+  --green:#39e8a0;
+  --green-bg:rgba(57,232,160,.08);
+  --red:#f04060;
+  --red-bg:rgba(240,64,96,.08);
+  --blue:#6eb4ff;
+  --muted:#5a5a7a;
+  --muted2:#3a3a5a;
+  --text:#ddddf0;
+  --text2:#9898b8;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;overflow-x:hidden}
+
+/* ── HEADER ── */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  background:var(--s1);position:sticky;top:0;z-index:100;
+}
+.logo{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;letter-spacing:.02em}
+.logo-apex{color:var(--text)}
+.logo-pro{color:var(--gold)}
+.logo-v{font-size:10px;color:var(--muted);margin-left:4px}
+.status-pill{
+  display:flex;align-items:center;gap:7px;
+  background:var(--s2);border:1px solid var(--border);
+  border-radius:20px;padding:5px 12px 5px 10px;
+  font-family:'IBM Plex Mono',monospace;font-size:10px;
+}
+.status-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.dot-scanning{background:var(--gold);animation:dotpulse 1.2s ease infinite}
+.dot-in_trade{background:var(--green);animation:dotpulse .8s ease infinite}
+.dot-idle{background:var(--blue)}
+.dot-error{background:var(--red)}
+.dot-starting{background:var(--muted)}
+@keyframes dotpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+.status-txt{color:var(--text2);text-transform:uppercase;letter-spacing:.08em}
+
+/* ── MAIN ── */
+.main{padding:16px 16px 80px;max-width:520px;margin:0 auto}
+
+/* ── SECTION LABEL ── */
+.section-label{
+  font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--muted);margin:20px 0 10px;
+  display:flex;align-items:center;gap:8px;
+}
+.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── STAT GRID ── */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.stat-card{
+  background:var(--s1);border:1px solid var(--border);
+  border-radius:12px;padding:14px 16px;position:relative;overflow:hidden;
+}
+.stat-card::before{
+  content:'';position:absolute;inset:0;
+  background:var(--glow);opacity:0;transition:opacity .3s;border-radius:12px;
+}
+.stat-label{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.stat-val{font-family:'IBM Plex Mono',monospace;font-size:24px;font-weight:600;line-height:1}
+.stat-sub{font-size:11px;color:var(--muted2);margin-top:5px;font-family:'IBM Plex Mono',monospace}
+.val-green{color:var(--green)}
+.val-red{color:var(--red)}
+.val-gold{color:var(--gold)}
+.val-blue{color:var(--blue)}
+
+/* Win rate arc */
+.wr-wrap{display:flex;align-items:center;gap:12px}
+.wr-arc-svg{flex-shrink:0}
+.wr-arc-bg{stroke:var(--border);fill:none;stroke-width:4}
+.wr-arc-fill{fill:none;stroke-width:4;stroke-linecap:round;transition:stroke-dasharray .6s ease}
+
+/* ── FILTER BAR ── */
+.filter-bar{
+  background:var(--s1);border:1px solid var(--border);border-radius:10px;
+  padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  display:flex;gap:16px;flex-wrap:wrap;align-items:center;
+}
+.fb-item{display:flex;flex-direction:column;gap:2px}
+.fb-lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
+.fb-val{color:var(--text)}
+.fb-val.accent{color:var(--gold)}
+
+/* ── POSITION CARD ── */
+.pos-card{
+  background:var(--s1);border:1px solid var(--border2);
+  border-radius:14px;overflow:hidden;margin-bottom:8px;
+}
+.pos-top{
+  display:flex;align-items:flex-start;justify-content:space-between;
+  padding:16px;border-bottom:1px solid var(--border);
+}
+.pos-sym{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600}
+.pos-entry{font-size:11px;color:var(--muted2);margin-top:3px;font-family:'IBM Plex Mono',monospace}
+.pos-right{text-align:right}
+.dir-badge{
+  display:inline-block;font-family:'IBM Plex Mono',monospace;
+  font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  padding:3px 10px;border-radius:4px;margin-bottom:6px;
+}
+.dir-long{background:var(--green-bg);color:var(--green);border:1px solid rgba(57,232,160,.2)}
+.dir-short{background:var(--red-bg);color:var(--red);border:1px solid rgba(240,64,96,.2)}
+.pos-pnl{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600}
+
+.pos-body{padding:14px 16px}
+
+/* Score bar */
+.score-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.score-bar-wrap{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.score-bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
+.score-bar-strong{background:linear-gradient(90deg,var(--gold),var(--gold2))}
+.score-bar-vstrong{background:linear-gradient(90deg,var(--green),#60ffcc)}
+.score-label{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600}
+
+/* TP chips */
+.tp-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tp-chip{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;
+  padding:4px 10px;border-radius:6px;
+  background:var(--s2);border:1px solid var(--border);color:var(--muted2);
+  transition:all .3s;
+}
+.tp-chip.tp-hit{background:rgba(57,232,160,.1);border-color:rgba(57,232,160,.3);color:var(--green)}
+.tp-chip.sl-chip{background:rgba(240,64,96,.06);border-color:rgba(240,64,96,.2);color:var(--red)}
+
+/* Signal layers */
+.layers{background:var(--bg);border-radius:8px;padding:10px 12px}
+.layer-row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:5px 0;border-bottom:1px solid var(--border);
+  font-family:'IBM Plex Mono',monospace;font-size:11px;
+}
 .layer-row:last-child{border:none}
-.trade-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.04)}
-.trade-sym{font-family:'Space Mono',monospace;font-size:12px;font-weight:700}
-.trade-score{font-size:10px;color:var(--muted);font-family:'Space Mono',monospace}
-.trade-pnl{font-family:'Space Mono',monospace;font-size:13px;font-weight:700}
-.filter-bar{background:rgba(240,192,64,.06);border:1px solid rgba(240,192,64,.2);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#bbb}
-.filter-bar b{color:var(--accent)}
+.layer-key{color:var(--muted2)}
+.layer-val{font-weight:600}
+.pass{color:var(--green)}.fail{color:var(--red)}.neutral{color:var(--muted)}
+
+/* ── NO POSITION ── */
+.no-pos{
+  background:var(--s1);border:1px solid var(--border);border-radius:12px;
+  padding:24px;text-align:center;margin-bottom:8px;
+}
+.no-pos-icon{font-size:28px;margin-bottom:10px;opacity:.3}
+.no-pos-txt{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);letter-spacing:.05em}
+
+/* ── TRADE LOG ── */
+.trade-log{
+  background:var(--s1);border:1px solid var(--border);border-radius:12px;overflow:hidden;
+}
+.trade-row{
+  display:grid;grid-template-columns:auto 1fr auto;gap:10px 12px;
+  align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);
+  transition:background .15s;
+}
+.trade-row:last-child{border:none}
+.trade-row:hover{background:var(--s2)}
+.trade-indicator{width:3px;height:36px;border-radius:2px;flex-shrink:0}
+.trade-win-ind{background:var(--green)}
+.trade-loss-ind{background:var(--red)}
+.trade-sym{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600}
+.trade-meta{font-size:10px;color:var(--muted2);font-family:'IBM Plex Mono',monospace;margin-top:2px}
+.trade-pnl{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;text-align:right}
+.trade-score-badge{
+  font-family:'IBM Plex Mono',monospace;font-size:9px;padding:2px 7px;
+  border-radius:4px;background:var(--s2);border:1px solid var(--border);
+  color:var(--muted2);margin-left:6px;
+}
+.no-trades{padding:30px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted)}
+
+/* ── SCAN FOOTER ── */
+.scan-footer{
+  position:fixed;bottom:0;left:0;right:0;
+  background:var(--s1);border-top:1px solid var(--border);
+  padding:10px 20px;display:flex;justify-content:space-between;align-items:center;
+  font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);
+  z-index:100;
+}
+.scan-dot{width:5px;height:5px;border-radius:50%;background:var(--green);margin-right:6px;display:inline-block;animation:dotpulse 2s ease infinite}
+
+/* ── CONFIG MODAL ── */
+.cfg-btn{
+  background:none;border:1px solid var(--border);color:var(--muted);
+  font-family:'IBM Plex Mono',monospace;font-size:10px;padding:4px 10px;
+  border-radius:6px;cursor:pointer;transition:all .2s;
+}
+.cfg-btn:hover{border-color:var(--gold);color:var(--gold)}
+
+.modal-overlay{
+  display:none;position:fixed;inset:0;background:rgba(8,8,16,.85);
+  z-index:200;align-items:center;justify-content:center;padding:20px;
+}
+.modal-overlay.open{display:flex}
+.modal{
+  background:var(--s1);border:1px solid var(--border2);border-radius:16px;
+  padding:22px;width:100%;max-width:400px;
+}
+.modal-title{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:var(--gold);margin-bottom:16px}
+.modal-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px;margin-top:12px}
+.modal-input{
+  width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  font-family:'IBM Plex Mono',monospace;font-size:12px;padding:9px 12px;
+  border-radius:8px;outline:none;
+}
+.modal-input:focus{border-color:var(--gold)}
+.modal-row{display:flex;gap:8px;margin-top:16px}
+.btn-save{
+  flex:1;background:var(--gold);color:#080810;
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+  padding:10px;border:none;border-radius:8px;cursor:pointer;
+}
+.btn-save:hover{background:var(--gold2)}
+.btn-cancel{
+  flex:1;background:none;color:var(--muted);
+  font-family:'IBM Plex Mono',monospace;font-size:11px;
+  padding:10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;
+}
+.btn-cancel:hover{border-color:var(--muted);color:var(--text)}
+
+/* ── ERROR STATE ── */
+.error-banner{
+  background:rgba(240,64,96,.08);border:1px solid rgba(240,64,96,.2);
+  border-radius:10px;padding:12px 14px;margin-bottom:12px;
+  font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--red);
+  display:none;
+}
+.error-banner.show{display:block}
 </style>
 </head>
 <body>
+
+<!-- CONFIG MODAL -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-title">// Configure API Endpoint</div>
+    <div class="modal-label">Railway / Server URL</div>
+    <input class="modal-input" id="api-url-input" placeholder="https://your-app.up.railway.app" />
+    <div style="font-size:10px;color:var(--muted);font-family:'IBM Plex Mono',monospace;margin-top:6px">
+      Leave blank to use relative path (same server)
+    </div>
+    <div class="modal-row">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save" onclick="saveUrl()">Connect</button>
+    </div>
+  </div>
+</div>
+
+<!-- HEADER -->
 <div class="header">
-  <div class="logo">APEX <span>Pro</span> <span style="font-size:11px;color:var(--muted)">v2.0</span></div>
-  <div class="badge"><span class="dot"></span> LIVE</div>
+  <div class="logo">
+    <span class="logo-apex">APEX</span> <span class="logo-pro">Pro</span>
+    <span class="logo-v">v2.0</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="status-pill">
+      <span class="status-dot" id="status-dot"></span>
+      <span class="status-txt" id="status-txt">—</span>
+    </div>
+    <button class="cfg-btn" onclick="openModal()">⚙</button>
+  </div>
 </div>
 
-<div class="filter-bar" id="filter-bar">
-  Loading filters...
+<div class="main">
+
+  <!-- ERROR BANNER -->
+  <div class="error-banner" id="error-banner">
+    Cannot reach API — check your server URL &nbsp;·&nbsp;
+    <a href="#" onclick="openModal();return false" style="color:var(--gold)">Configure →</a>
+  </div>
+
+  <!-- STATS -->
+  <div class="section-label">Performance</div>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total P&L</div>
+      <div class="stat-val" id="stat-pnl">—</div>
+      <div class="stat-sub" id="stat-bal">Balance: —</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="wr-wrap">
+        <svg class="wr-arc-svg" width="44" height="44" viewBox="0 0 44 44">
+          <circle class="wr-arc-bg" cx="22" cy="22" r="18"/>
+          <circle id="wr-arc" class="wr-arc-fill" cx="22" cy="22" r="18"
+            stroke-dasharray="0 113" stroke-dashoffset="28" stroke="var(--green)"/>
+        </svg>
+        <div>
+          <div class="stat-val val-gold" id="stat-wr">0%</div>
+          <div class="stat-sub" id="stat-wl">0W / 0L</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar">
+    <div class="fb-item">
+      <span class="fb-lbl">Min Score</span>
+      <span class="fb-val accent" id="fb-minscore">—</span>
+    </div>
+    <div class="fb-item">
+      <span class="fb-lbl">Trend Blocks</span>
+      <span class="fb-val" id="fb-trend">—</span>
+    </div>
+    <div class="fb-item">
+      <span class="fb-lbl">Score Blocks</span>
+      <span class="fb-val" id="fb-score">—</span>
+    </div>
+    <div class="fb-item">
+      <span class="fb-lbl">Watchlist</span>
+      <span class="fb-val" id="fb-watch">15</span>
+    </div>
+  </div>
+
+  <!-- OPEN POSITION -->
+  <div class="section-label">Position</div>
+  <div id="position-section"></div>
+
+  <!-- TRADE LOG -->
+  <div class="section-label">Trade History</div>
+  <div class="trade-log" id="trade-log">
+    <div class="no-trades">No trades recorded yet</div>
+  </div>
+
 </div>
 
-<div class="grid2" id="summary"></div>
-
-<div id="position-section"></div>
-
-<div class="sec">All Trades</div>
-<div class="card" id="trade-log"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No trades yet</div></div>
+<!-- FOOTER -->
+<div class="scan-footer">
+  <span><span class="scan-dot" id="scan-indicator"></span><span id="scan-time">—</span></span>
+  <span id="scan-leverage" style="color:var(--muted)">2× leverage</span>
+</div>
 
 <script>
-async function refresh(){
-  try{
-    const d = await fetch('/api/state').then(r=>r.json())
-    renderSummary(d)
-    renderFilterBar(d)
-    renderPosition(d.position)
-    renderTrades(d.trades)
-  }catch(e){console.error(e)}
+var API_BASE = localStorage.getItem('apex_url') || '';
+
+function getApiUrl(path){
+  return (API_BASE ? API_BASE.replace(/\/+$/,'') : '') + path;
+}
+
+function openModal(){
+  document.getElementById('api-url-input').value = API_BASE;
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal(){
+  document.getElementById('modal').classList.remove('open');
+}
+function saveUrl(){
+  var v = document.getElementById('api-url-input').value.trim();
+  API_BASE = v;
+  localStorage.setItem('apex_url', v);
+  closeModal();
+  refresh();
+}
+
+function timeAgo(ts){
+  if(!ts) return '—';
+  var s = Math.floor(Date.now()/1000) - ts;
+  if(s < 5) return 'just now';
+  if(s < 60) return s+'s ago';
+  if(s < 3600) return Math.floor(s/60)+'m ago';
+  return Math.floor(s/3600)+'h ago';
+}
+
+function setStatus(st){
+  var dot = document.getElementById('status-dot');
+  var txt = document.getElementById('status-txt');
+  var map = {scanning:'scanning',in_trade:'in trade',idle:'idle',error:'error',starting:'starting'};
+  dot.className = 'status-dot dot-'+(st||'idle');
+  txt.textContent = (map[st]||st||'—').toUpperCase();
+}
+
+function renderStats(d){
+  var pnl = d.total_pnl||0;
+  var el = document.getElementById('stat-pnl');
+  el.textContent = (pnl>=0?'+$':'−$') + Math.abs(pnl).toFixed(2);
+  el.className = 'stat-val '+(pnl>=0?'val-green':'val-red');
+  document.getElementById('stat-bal').textContent = 'Balance: $'+(d.balance||0).toFixed(2);
+
+  var wr = d.win_rate||0;
+  document.getElementById('stat-wr').textContent = wr.toFixed(1)+'%';
+  document.getElementById('stat-wl').textContent = (d.wins||0)+'W / '+(d.losses||0)+'L';
+
+  // Arc: circumference = 2π×18 ≈ 113
+  var circ = 113;
+  var fill = (wr/100)*circ;
+  var arc = document.getElementById('wr-arc');
+  arc.style.strokeDasharray = fill+' '+circ;
+  arc.style.stroke = wr>=60?'var(--green)':wr>=40?'var(--gold)':'var(--red)';
 }
 
 function renderFilterBar(d){
-  const el = document.getElementById('filter-bar')
-  el.innerHTML = `Min score: <b>${d.min_score}/100</b> &nbsp;|&nbsp; `+
-    `Trend blocks: <b>${d.trend_blocks}</b> &nbsp;|&nbsp; `+
-    `Score blocks: <b>${d.score_blocks}</b>`
-}
-
-function renderSummary(d){
-  const wr = d.win_rate
-  const pnl = d.total_pnl
-  document.getElementById('summary').innerHTML = `
-    <div class="card">
-      <div class="card-lbl">Total P&L</div>
-      <div class="card-val ${pnl>=0?'green':'red'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</div>
-      <div class="card-sub">Balance: $${d.balance.toFixed(2)}</div>
-    </div>
-    <div class="card">
-      <div class="card-lbl">Win Rate</div>
-      <div class="card-val amber">${wr}%</div>
-      <div class="card-sub">${d.wins}W / ${d.losses}L</div>
-    </div>`
+  document.getElementById('fb-minscore').textContent = d.min_score||'—';
+  document.getElementById('fb-trend').textContent = d.trend_blocks||0;
+  document.getElementById('fb-score').textContent = d.score_blocks||0;
 }
 
 function renderPosition(pos){
-  const sec = document.getElementById('position-section')
-  if(!pos){sec.innerHTML='';return}
-  const dir = pos.direction
-  const tp = pos.tp_sl
-  const unreal = pos.unrealized_pct||0
-  sec.innerHTML = `
-    <div class="sec">Open Position</div>
-    <div class="pos-card">
-      <div class="pos-head">
-        <div>
-          <div class="pos-sym">${pos.symbol}</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:3px">
-            Entry: $${pos.entry} &nbsp;|&nbsp; Score: ${pos.score} ${pos.label}
-          </div>
-        </div>
-        <div>
-          <div class="pos-dir ${dir==='long'?'long-bg':'short-bg'}">${dir.toUpperCase()}</div>
-          <div style="font-family:'Space Mono',monospace;font-size:14px;font-weight:700;text-align:right;margin-top:6px;color:${unreal>=0?'var(--green)':'var(--red)'}">
-            ${unreal>=0?'+':''}${unreal.toFixed(2)}%
-          </div>
-        </div>
-      </div>
-      <div class="tp-row">
-        <span class="tp-chip ${pos.tp1_hit?'hit':''}">TP1 ${tp.tp1_pct}%</span>
-        <span class="tp-chip ${pos.tp2_hit?'hit':''}">TP2 ${tp.tp2_pct}%</span>
-        <span class="tp-chip">TP3 ${tp.tp3_pct}%</span>
-        <span class="tp-chip" style="color:var(--red)">SL ${tp.sl_pct}%</span>
-      </div>
-      <div class="layers">
-        <div class="layer-row"><span style="color:var(--muted)">UT Bot</span><span>${pos.trend?.ut_bot||'—'}</span></div>
-        <div class="layer-row"><span style="color:var(--muted)">ADX</span><span>${pos.trend?.adx||'—'}</span></div>
-        <div class="layer-row"><span style="color:var(--muted)">vs VWAP</span><span>${pos.trend?.vwap_pass?'✓ Pass':'✗ Fail'}</span></div>
-      </div>
-    </div>`
+  var sec = document.getElementById('position-section');
+  if(!pos){
+    sec.innerHTML = '<div class="no-pos"><div class="no-pos-icon">○</div><div class="no-pos-txt">NO OPEN POSITION</div></div>';
+    return;
+  }
+
+  var dir = pos.direction;
+  var tp = pos.tp_sl||{};
+  var unreal = pos.unrealized_pct||0;
+  var score = pos.score||0;
+
+  var scoreClass = score>=80?'score-bar-vstrong':'score-bar-strong';
+  var scoreLabel = score>=80?'VERY STRONG':score>=75?'STRONG':'MEDIUM';
+
+  // Layer data
+  var trend = pos.trend||{};
+  var obi_data = pos.obi||{};
+  var cvd_data = pos.cvd||{};
+  var oi_data = pos.oi||{};
+
+  sec.innerHTML = '<div class="pos-card">'
+    +'<div class="pos-top">'
+      +'<div>'
+        +'<div class="pos-sym">'+pos.symbol+'</div>'
+        +'<div class="pos-entry">Entry $'+pos.entry+' &nbsp;·&nbsp; Qty '+pos.qty+'</div>'
+      +'</div>'
+      +'<div class="pos-right">'
+        +'<div class="dir-badge dir-'+dir+'">'+dir.toUpperCase()+'</div>'
+        +'<div class="pos-pnl '+(unreal>=0?'val-green':'val-red')+'">'+(unreal>=0?'+':'')+unreal.toFixed(2)+'%</div>'
+        +'<div style="font-size:10px;color:var(--muted2);font-family:\'IBM Plex Mono\',monospace;text-align:right;margin-top:2px">Since: '+timeAgo(pos.opened_at)+'</div>'
+      +'</div>'
+    +'</div>'
+    +'<div class="pos-body">'
+      +'<div class="score-row">'
+        +'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:var(--muted2);width:42px">SCORE</div>'
+        +'<div class="score-bar-wrap"><div class="score-bar-fill '+scoreClass+'" style="width:'+(score)+'%"></div></div>'
+        +'<div class="score-label '+(score>=80?'val-green':'val-gold')+'">'+score+'</div>'
+        +'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:9px;color:var(--muted2);margin-left:2px">'+scoreLabel+'</div>'
+      +'</div>'
+      +'<div class="tp-row">'
+        +'<span class="tp-chip '+(pos.tp1_hit?'tp-hit':'')+'">TP1 +'+(tp.tp1_pct||'?')+'%</span>'
+        +'<span class="tp-chip '+(pos.tp2_hit?'tp-hit':'')+'">TP2 +'+(tp.tp2_pct||'?')+'%</span>'
+        +'<span class="tp-chip">TP3 +'+(tp.tp3_pct||'?')+'%</span>'
+        +'<span class="tp-chip sl-chip">SL −'+(tp.sl_pct||'?')+'%</span>'
+      +'</div>'
+      +'<div class="layers">'
+        +'<div class="layer-row"><span class="layer-key">UT Bot</span><span class="layer-val '+(trend.ut_pass?'pass':'fail')+'">'+(trend.ut_bot||'—')+'</span></div>'
+        +'<div class="layer-row"><span class="layer-key">ADX</span><span class="layer-val '+(trend.adx_pass?'pass':'fail')+'">'+(trend.adx||'—')+'</span></div>'
+        +'<div class="layer-row"><span class="layer-key">vs VWAP</span><span class="layer-val '+(trend.vwap_pass?'pass':'fail')+'">'+(trend.vwap_pass?'Above VWAP':'Below VWAP')+'</span></div>'
+        +'<div class="layer-row"><span class="layer-key">OBI</span><span class="layer-val">'+((obi_data.obi||0)*100).toFixed(1)+'%</span></div>'
+        +'<div class="layer-row"><span class="layer-key">CVD Buy Ratio</span><span class="layer-val">'+((cvd_data.buy_ratio||0)*100).toFixed(1)+'%</span></div>'
+        +'<div class="layer-row"><span class="layer-key">OI Signal</span><span class="layer-val '+(oi_data.oi_signal===dir?'pass':oi_data.oi_signal==='neutral'?'neutral':'fail')+'">'+(oi_data.oi_signal||'—').toUpperCase()+'</span></div>'
+      +'</div>'
+    +'</div>'
+  +'</div>';
 }
 
 function renderTrades(trades){
-  if(!trades||!trades.length) return
-  const el = document.getElementById('trade-log')
-  el.innerHTML = trades.map(t=>{
-    const isWin = t.result==='win'
-    return `<div class="trade-row">
-      <div>
-        <div class="trade-sym">${t.symbol}</div>
-        <div class="trade-score">${t.score} ${t.label} &nbsp;·&nbsp; ${t.reason||''}</div>
-      </div>
-      <div class="trade-pnl ${isWin?'green':'red'}">${isWin?'+':''}$${(t.pnl||0).toFixed(2)}</div>
-    </div>`
-  }).join('')
+  var el = document.getElementById('trade-log');
+  if(!trades||!trades.length){
+    el.innerHTML = '<div class="no-trades">No trades recorded yet</div>';
+    return;
+  }
+  el.innerHTML = trades.map(function(t){
+    var isWin = t.result==='win';
+    var pnl = t.pnl||0;
+    var d = new Date(t.timestamp*1000);
+    var dateStr = d.toLocaleDateString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    return '<div class="trade-row">'
+      +'<div class="trade-indicator '+(isWin?'trade-win-ind':'trade-loss-ind')+'"></div>'
+      +'<div>'
+        +'<div style="display:flex;align-items:center">'
+          +'<span class="trade-sym">'+t.symbol+'</span>'
+          +'<span class="trade-score-badge">'+t.score+' pts</span>'
+        +'</div>'
+        +'<div class="trade-meta">'+(t.direction||'').toUpperCase()+' &nbsp;·&nbsp; '+(t.reason||'').replace(/_/g,' ')+' &nbsp;·&nbsp; '+dateStr+'</div>'
+      +'</div>'
+      +'<div>'
+        +'<div class="trade-pnl '+(isWin?'val-green':'val-red')+'">'+(pnl>=0?'+':'')+pnl.toFixed(2)+'</div>'
+        +'<div style="font-size:9px;color:var(--muted2);font-family:\'IBM Plex Mono\',monospace;text-align:right;margin-top:2px">'+(t.label||'')+'</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
 }
 
-refresh()
-setInterval(refresh, 5000)
+async function refresh(){
+  try{
+    var url = getApiUrl('/api/state');
+    var resp = await fetch(url, {cache:'no-store'});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    var d = await resp.json();
+
+    document.getElementById('error-banner').classList.remove('show');
+
+    setStatus(d.status);
+    renderStats(d);
+    renderFilterBar(d);
+    renderPosition(d.position);
+    renderTrades(d.trades||[]);
+
+    var scanEl = document.getElementById('scan-time');
+    scanEl.textContent = 'Last scan: '+timeAgo(d.last_scan);
+
+  }catch(e){
+    console.error('Fetch failed:',e);
+    document.getElementById('error-banner').classList.add('show');
+    setStatus('error');
+    document.getElementById('scan-time').textContent = 'Connection error';
+    if(!API_BASE) openModal();
+  }
+}
+
+// Check if first time (no URL configured and not same-origin server)
+var firstLoad = !localStorage.getItem('apex_url_set');
+if(firstLoad && !window.location.pathname.startsWith('/api')){
+  // Try relative first; if it fails modal opens automatically
+  localStorage.setItem('apex_url_set','1');
+}
+
+refresh();
+setInterval(refresh, 5000);
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
