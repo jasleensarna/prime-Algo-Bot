@@ -1,39 +1,16 @@
 """
 APEX Pro — v2.0
-════════════════════════════════════════════════════════════════
-SIGNAL ARCHITECTURE:
-
-  ENTRY — 3 Layers
-    Layer 1: Trend Gate (all 3 must pass or BLOCKED)
-             • UT Bot direction on 15m
-             • ADX > 25
-             • Price above/below VWAP
-    Layer 2: Score >= 75 required
-             • OBI            35 pts
-             • CVD + CVD Div  35 pts
-             • OI Delta       20 pts
-             • All 3 agree   +10 pts
-    Layer 3: Position sizing (score-driven, 2x leverage)
-             75-79 → 15%  |  80-89 → 20%  |  90+ → 25%
-
-  EXIT — 3 Conditions
-    Exit 1: TP/SL auto (TP1 hit → SL moves to breakeven)
-    Exit 2: Momentum Exhaustion (shrinking candles + CVD flat)
-    Exit 3: Structure Break (CVD divergence confirms reversal)
-
-ENV VARS NEEDED ON RAILWAY:
-  BYBIT_API_KEY, BYBIT_API_SECRET, SUPABASE_URL, SUPABASE_KEY
-════════════════════════════════════════════════════════════════
+ENTRY: Trend Gate (UT Bot 15m + ADX>25 + VWAP) → Score ≥75 (OBI+CVD+OI Delta)
+EXIT:  TP1→SL to breakeven | Momentum Exhaustion | Structure Break
 """
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
-import uvicorn, os, time, asyncio, hmac, hashlib, json
+import uvicorn, os, time, asyncio, hmac, hashlib
 import httpx
 
 app = FastAPI()
 
-# ── CONFIG ───────────────────────────────────────────────────
 API_KEY       = os.getenv("BYBIT_API_KEY", "")
 API_SECRET    = os.getenv("BYBIT_API_SECRET", "")
 BASE_URL      = "https://api.bybit.com"
@@ -81,11 +58,25 @@ async def _post(path, body):
         return r.json()
 
 async def get_balance():
+    """
+    Fixed: tries multiple balance fields in order
+    Unified accounts use walletBalance, not availableToWithdraw
+    """
     try:
-        r = await _get("/v5/account/wallet-balance", {"accountType": "UNIFIED"}, signed=True)
-        for c in r["result"]["list"][0]["coin"]:
+        r = await _get("/v5/account/wallet-balance",
+                       {"accountType": "UNIFIED"}, signed=True)
+        coins = r["result"]["list"][0]["coin"]
+        for c in coins:
             if c["coin"] == "USDT":
-                return float(c["availableToWithdraw"])
+                # Try each field in order — first non-zero wins
+                for field in ["availableToWithdraw", "walletBalance", "equity", "availableBalance"]:
+                    val = c.get(field, "")
+                    if val and str(val).strip() not in ("", "0", "0.0"):
+                        return float(val)
+        # Fallback: totalWalletBalance at account level
+        total = r["result"]["list"][0].get("totalWalletBalance", "0")
+        if total and str(total).strip() not in ("", "0"):
+            return float(total)
     except Exception as e:
         print(f"Balance err: {e}")
     return 0.0
@@ -169,12 +160,12 @@ def _atr(candles, period=14):
     if len(candles) < period + 1: return 0.0
     trs = []
     for i in range(1, len(candles)):
-        h  = float(candles[i][2]); l = float(candles[i][3]); pc = float(candles[i-1][4])
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        h=float(candles[i][2]); l=float(candles[i][3]); pc=float(candles[i-1][4])
+        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
     return sum(trs[-period:]) / period
 
 def _adx(candles, period=14):
-    if len(candles) < period * 2 + 1: return 0.0
+    if len(candles) < period*2+1: return 0.0
     pdms, ndms, trs = [], [], []
     for i in range(1, len(candles)):
         h=float(candles[i][2]); ph=float(candles[i-1][2])
@@ -196,13 +187,13 @@ def _adx(candles, period=14):
     return sum(dxs[-period:])/min(len(dxs),period) if dxs else 0.0
 
 def _ut_bot(candles, mult=1.5, period=10):
-    if len(candles) < period + 5: return "neutral"
-    atr = _atr(candles, period)
-    if atr == 0: return "neutral"
-    trail = float(candles[0][4]); sig = "neutral"
+    if len(candles) < period+5: return "neutral"
+    atr=_atr(candles, period)
+    if atr==0: return "neutral"
+    trail=float(candles[0][4]); sig="neutral"
     for i in range(1, len(candles)):
         cl=float(candles[i][4]); pcl=float(candles[i-1][4]); dist=mult*atr
-        trail = max(trail, cl-dist) if cl>trail else min(trail, cl+dist)
+        trail=max(trail, cl-dist) if cl>trail else min(trail, cl+dist)
         if cl>trail and pcl<=trail: sig="long"
         elif cl<trail and pcl>=trail: sig="short"
     return sig
@@ -215,16 +206,15 @@ def _vwap(candles):
     return tpv/tv if tv>0 else 0.0
 
 async def trend_gate(symbol, direction):
-    c15 = await get_klines(symbol, "15", 60)
-    c5  = await get_klines(symbol, "5",  30)
-    if not c15 or not c5: return False, {"reason": "no data"}
+    c15=await get_klines(symbol,"15",60)
+    c5 =await get_klines(symbol,"5", 30)
+    if not c15 or not c5: return False,{"reason":"no data"}
     ut=_ut_bot(c15); adx=_adx(c15); vwap=_vwap(c5); price=float(c5[-1][4])
-    ut_ok   = ut == direction or ut == "neutral"
-    adx_ok  = adx >= 25
-    vwap_ok = price > vwap if direction=="long" else price < vwap
-    passed  = ut_ok and adx_ok and vwap_ok
-    info    = {"ut": ut, "adx": round(adx,1), "vwap": round(vwap,4),
-               "price": round(price,4), "passed": passed}
+    ut_ok  =ut==direction or ut=="neutral"
+    adx_ok =adx>=25
+    vwap_ok=price>vwap if direction=="long" else price<vwap
+    passed =ut_ok and adx_ok and vwap_ok
+    info   ={"ut":ut,"adx":round(adx,1),"vwap":round(vwap,4),"price":round(price,4),"passed":passed}
     if not passed:
         fails=[]
         if not ut_ok:   fails.append(f"UT={ut}")
@@ -236,13 +226,13 @@ async def trend_gate(symbol, direction):
 # ── LAYER 2: ENTRY SCORE ─────────────────────────────────────
 
 async def score_signal(symbol, direction):
-    ob_data, trade_data, oi_data, ticker = await asyncio.gather(
+    ob_data,trade_data,oi_data,ticker = await asyncio.gather(
         get_orderbook(symbol), get_recent_trades(symbol),
         get_open_interest(symbol), get_ticker(symbol),
     )
     score=0; details={}; obi=0.5; buy_ratio=0.5; oi_signal="neutral"
 
-    # OBI — 35 pts
+    # OBI 35pts
     bids=ob_data.get("b",[]); asks=ob_data.get("a",[])
     if bids and asks:
         bv=sum(float(b[1]) for b in bids); av=sum(float(a[1]) for a in asks); tot=bv+av
@@ -254,7 +244,7 @@ async def score_signal(symbol, direction):
         if stack and direction=="long": score+=5
         details.update({"obi":round(obi,4),"bid_stack":stack,"obi_pts":round(obi_pts,1)})
 
-    # CVD + Divergence — 35 pts
+    # CVD 35pts
     if trade_data:
         bvol=sum(float(t["size"]) for t in trade_data if t.get("side")=="Buy")
         svol=sum(float(t["size"]) for t in trade_data if t.get("side")=="Sell")
@@ -266,19 +256,16 @@ async def score_signal(symbol, direction):
         fb=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")
         lb=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")
         if lb>fb*1.2 and direction=="long": score+=3
-        # CVD Divergence penalty
         if len(trade_data)>=100:
             early=trade_data[len(trade_data)//2:]; late=trade_data[:50]
             ep=float(early[0]["price"]) if early else 0
             lp=float(late[0]["price"])  if late  else 0
-            ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-\
-               sum(float(t["size"]) for t in early if t.get("side")=="Sell")
-            lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-\
-               sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
-            if ep>0 and (lp>ep) != (lc>ec): score-=8  # diverge = fake move
+            ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-sum(float(t["size"]) for t in early if t.get("side")=="Sell")
+            lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
+            if ep>0 and (lp>ep)!=(lc>ec): score-=8
         details.update({"buy_ratio":round(buy_ratio,4),"cvd_delta":round(bvol-svol,2),"flow_pts":round(flow_pts,1)})
 
-    # OI Delta — 20 pts
+    # OI Delta 20pts
     if oi_data and len(oi_data)>=2:
         try:
             oi_now=float(oi_data[0]["openInterest"]); oi_prev=float(oi_data[-1]["openInterest"])
@@ -286,17 +273,17 @@ async def score_signal(symbol, direction):
             price_now=float(ticker.get("lastPrice",0))
             price_prev=float(ticker.get("prevPrice24h",price_now) or price_now)
             price_up=price_now>price_prev
-            if oi_pct>0.3 and price_up:   oi_signal="long";  score+=20
-            elif oi_pct>0.3 and not price_up: oi_signal="short"; score+=(20 if direction=="short" else 0)
-            elif oi_pct<-0.3: oi_signal="unwind"; score-=5
-            else: score+=5
+            if oi_pct>0.3 and price_up:          oi_signal="long";  score+=20
+            elif oi_pct>0.3 and not price_up:    oi_signal="short"; score+=(20 if direction=="short" else 0)
+            elif oi_pct<-0.3:                    oi_signal="unwind"; score-=5
+            else:                                score+=5
             details.update({"oi_pct":round(oi_pct,3),"oi_signal":oi_signal})
         except Exception as e:
             print(f"OI score err: {e}"); score+=5
     else:
         score+=5
 
-    # All 3 agree bonus — +10 pts
+    # All 3 agree +10
     votes=0
     if obi>0.58 and direction=="long":    votes+=1
     if obi<0.42 and direction=="short":   votes+=1
@@ -313,7 +300,7 @@ async def score_signal(symbol, direction):
     else:           label="WEAK"
     return score, label, details
 
-# ── TP/SL + SIZING ───────────────────────────────────────────
+# ── SIZING & TP/SL ───────────────────────────────────────────
 
 def get_sizing(score, balance):
     pct=25.0 if score>=90 else 20.0 if score>=80 else 15.0
@@ -343,13 +330,11 @@ async def check_momentum_exit(symbol, pos):
     trades=await get_recent_trades(symbol); cvd_falling=False
     if trades and len(trades)>=100:
         f50=trades[50:100]; l50=trades[:50]
-        fc=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")-\
-           sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
-        lc=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")-\
-           sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
+        fc=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")-sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
+        lc=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")-sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
         cvd_falling=(lc<fc*0.6 if side=="long" else lc>fc*0.6)
     should=shrinking and tiny and cvd_falling
-    reason=f"Momentum exhaustion: shrinking candles+CVD falling at {pnl:.1f}% profit" if should else ""
+    reason=f"Momentum exhaustion at {pnl:.1f}% profit" if should else ""
     return should, reason
 
 # ── EXIT 3: STRUCTURE BREAK ──────────────────────────────────
@@ -364,24 +349,22 @@ async def check_structure_break(symbol, pos):
     trades=await get_recent_trades(symbol)
     if not trades or len(trades)<100: return False,""
     early=trades[len(trades)//2:]; late=trades[:50]
-    ep=float(early[0]["price"]) if early else 0
-    lp=float(late[0]["price"])  if late  else 0
+    ep=float(early[0]["price"]) if early else 0; lp=float(late[0]["price"]) if late else 0
     if ep==0: return False,""
-    ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-\
-       sum(float(t["size"]) for t in early if t.get("side")=="Sell")
-    lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-\
-       sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
+    ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-sum(float(t["size"]) for t in early if t.get("side")=="Sell")
+    lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
     bad=(side=="long" and not(lp>ep) and (lc>ec)) or (side=="short" and (lp>ep) and not(lc>ec))
-    reason=f"Structure break: CVD divergence at {pnl:.1f}% profit" if bad else ""
+    reason=f"Structure break at {pnl:.1f}% profit" if bad else ""
     return bad, reason
 
-# ── MAIN LOOP ────────────────────────────────────────────────
+# ── SCAN LOOP ────────────────────────────────────────────────
 
 async def scan_once():
     if state["position"]:
         await manage_position(); return
     state["balance"]=await get_balance()
-    if state["balance"]<10: print("Low balance"); return
+    if state["balance"]<10:
+        print(f"Low balance: {state['balance']}"); return
     print(f"\n── Scan │ Balance:${state['balance']:.2f} ──")
     for symbol in WATCHLIST:
         if state["position"]: break
@@ -400,17 +383,14 @@ async def scan_symbol(symbol):
     vol=float(ticker.get("volume24h",0))
     if vol<500_000 or abs(change)>15: return
     direction="long" if change>0 else "short"
-
     gate_ok,gate_info=await trend_gate(symbol,direction)
     if not gate_ok:
         state["trend_blocks"]+=1
         print(f"  BLOCKED {symbol} │ {gate_info.get('reason','')}"); return
-
     score,label,details=await score_signal(symbol,direction)
     if score<MIN_SCORE:
         state["score_blocks"]+=1
         print(f"  BLOCKED {symbol} │ Score {score}<{MIN_SCORE}"); return
-
     print(f"  ✅ SIGNAL {symbol} │ {direction.upper()} │ {score} ({label})")
     state["last_signal"]={"symbol":symbol,"direction":direction,"score":score,
                            "label":label,"gate":gate_info,"details":details,"time":int(time.time())}
@@ -443,8 +423,7 @@ async def manage_position():
     pnl=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
 
     if not pos["tp1_hit"]:
-        tp1_hit=price>=pos["tp1"] if side=="long" else price<=pos["tp1"]
-        if tp1_hit:
+        if (side=="long" and price>=pos["tp1"]) or (side=="short" and price<=pos["tp1"]):
             print(f"  TP1 HIT {symbol} │ SL→breakeven")
             pos["tp1_hit"]=True; pos["be_moved"]=True
             await update_sl(symbol, entry*1.001 if side=="long" else entry*0.999)
@@ -453,8 +432,7 @@ async def manage_position():
             pos["qty_remaining"]=round(pos["qty_remaining"]-cq,3)
 
     if pos["tp1_hit"] and not pos["tp2_hit"]:
-        tp2_hit=price>=pos["tp2"] if side=="long" else price<=pos["tp2"]
-        if tp2_hit:
+        if (side=="long" and price>=pos["tp2"]) or (side=="short" and price<=pos["tp2"]):
             print(f"  TP2 HIT {symbol} │ Trailing SL")
             pos["tp2_hit"]=True
             trail=pos["tp1"]*1.001 if side=="long" else pos["tp1"]*0.999
@@ -464,14 +442,12 @@ async def manage_position():
             pos["qty_remaining"]=round(pos["qty_remaining"]-cq,3)
 
     if pos["tp2_hit"]:
-        tp3_hit=price>=pos["tp3"] if side=="long" else price<=pos["tp3"]
-        if tp3_hit:
+        if (side=="long" and price>=pos["tp3"]) or (side=="short" and price<=pos["tp3"]):
             print(f"  TP3 HIT {symbol}")
             await close_full(symbol,pos["qty_remaining"],side)
             await record_close(pos,price,"win","TP3"); return
 
-    sl_hit=price<=pos["sl"] if side=="long" else price>=pos["sl"]
-    if sl_hit:
+    if (side=="long" and price<=pos["sl"]) or (side=="short" and price>=pos["sl"]):
         print(f"  SL HIT {symbol}")
         await close_full(symbol,pos["qty_remaining"],side)
         await record_close(pos,price,"loss","SL"); return
@@ -568,118 +544,639 @@ async def dashboard():
     trades=state["trades"]
     avg_win =sum(t.get("pnl",0) for t in trades if (t.get("result","")).lower()=="win") /max(wins,1)
     avg_loss=sum(t.get("pnl",0) for t in trades if (t.get("result","")).lower()=="loss")/max(losses,1)
+    pnl_col="#2d7a4f" if state['total_pnl']>=0 else "#8b1a2e"
+    pnl_sign="+" if state['total_pnl']>=0 else ""
 
+    # ── Active position card ──
     pos_html=""
     if pos:
         try:
             tk=await get_ticker(pos["symbol"]); price=float(tk.get("lastPrice",pos["entry"]))
         except: price=pos["entry"]
-        pnl=(price-pos["entry"])/pos["entry"]*100 if pos["side"]=="long" else (pos["entry"]-price)/pos["entry"]*100
-        col="#3dffa0" if pnl>=0 else "#ff4d6d"
-        pos_html=f"""<div class="card pos-card">
-          <div class="pos-hdr">
-            <span class="sym">{pos['symbol']}</span>
-            <span class="badge {'lng' if pos['side']=='long' else 'sht'}">{pos['side'].upper()}</span>
-            <span class="scb">{pos['score']} · {pos['label']}</span>
+        pnl_p=(price-pos["entry"])/pos["entry"]*100 if pos["side"]=="long" else (pos["entry"]-price)/pos["entry"]*100
+        pcol="#2d7a4f" if pnl_p>=0 else "#8b1a2e"
+        pcol_t="#1a9e5c" if pnl_p>=0 else "#cc3355"
+        tp1c="tp-hit" if pos["tp1_hit"] else "tp-open"
+        tp2c="tp-hit" if pos["tp2_hit"] else "tp-open"
+        side_cls="side-long" if pos["side"]=="long" else "side-short"
+        pos_html=f"""
+        <div class="pos-card">
+          <div class="pos-top">
+            <div class="pos-left">
+              <span class="pos-sym">{pos['symbol'].replace('USDT','')}<span class="pos-usdt">/USDT</span></span>
+              <span class="pos-dir {side_cls}">{pos['side'].upper()}</span>
+            </div>
+            <div class="pos-score-wrap">
+              <span class="pos-score-num">{pos['score']}</span>
+              <span class="pos-score-lbl">{pos['label']}</span>
+            </div>
           </div>
-          <div class="pg">
-            <div><span class="lbl">Entry</span><span class="val">${pos['entry']:.4f}</span></div>
-            <div><span class="lbl">Price</span><span class="val" style="color:{col}">${price:.4f}</span></div>
-            <div><span class="lbl">P&L</span><span class="val" style="color:{col}">{pnl:+.2f}%</span></div>
-            <div><span class="lbl">SL</span><span class="val red">${pos['sl']:.4f}</span></div>
+          <div class="pos-metrics">
+            <div class="pm"><span class="pm-l">Entry</span><span class="pm-v">${pos['entry']:.4f}</span></div>
+            <div class="pm"><span class="pm-l">Mark</span><span class="pm-v" style="color:{pcol_t}">${price:.4f}</span></div>
+            <div class="pm"><span class="pm-l">P&L</span><span class="pm-v" style="color:{pcol_t}">{pnl_p:+.2f}%</span></div>
+            <div class="pm"><span class="pm-l">Stop</span><span class="pm-v loss-col">${pos['sl']:.4f}</span></div>
           </div>
-          <div class="tpr">
-            <span class="tp {'hit' if pos['tp1_hit'] else ''}">TP1 +{pos['tp1_pct']}%</span>
-            <span class="tp {'hit' if pos['tp2_hit'] else ''}">TP2 +{pos['tp2_pct']}%</span>
-            <span class="tp">TP3 +{pos['tp3_pct']}%</span>
+          <div class="tp-track">
+            <div class="tp-item {tp1c}">
+              <span class="tp-label">TP1</span>
+              <span class="tp-pct">+{pos['tp1_pct']}%</span>
+              {"<span class='tp-check'>✓</span>" if pos['tp1_hit'] else ""}
+            </div>
+            <div class="tp-line"></div>
+            <div class="tp-item {tp2c}">
+              <span class="tp-label">TP2</span>
+              <span class="tp-pct">+{pos['tp2_pct']}%</span>
+              {"<span class='tp-check'>✓</span>" if pos['tp2_hit'] else ""}
+            </div>
+            <div class="tp-line"></div>
+            <div class="tp-item tp-open">
+              <span class="tp-label">TP3</span>
+              <span class="tp-pct">+{pos['tp3_pct']}%</span>
+            </div>
           </div>
-          {"<div class='beb'>✓ SL at Breakeven</div>" if pos.get('be_moved') else ''}
+          {"<div class='be-pill'>⬆ Stop moved to breakeven</div>" if pos.get('be_moved') else ""}
         </div>"""
 
+    # ── Trade log ──
     tlog=""
-    for t in reversed(trades[-20:]):
+    for t in reversed(trades[-15:]):
         res=(t.get("result","")).lower(); pnl=t.get("pnl",0)
-        col="#3dffa0" if res=="win" else "#ff4d6d"
+        is_win=res=="win"
         d=(t.get("direction",t.get("side",""))).upper()
-        iscol="tl" if d in ["LONG","BUY"] else "ts"
-        tlog+=f"""<div class="tr">
-          <span class="tsym">{t.get('symbol','')}</span>
-          <span class="td {iscol}">{d}</span>
-          <span class="tsc">{t.get('score','—')}</span>
-          <span class="tex">{t.get('exit_type','')}</span>
-          <span class="tp2" style="color:{col}">{'+' if pnl>=0 else ''}${pnl:.2f}</span>
+        is_long=d in ["LONG","BUY"]
+        tlog+=f"""
+        <div class="trow">
+          <div class="trow-left">
+            <span class="tsym">{t.get('symbol','').replace('USDT','')}</span>
+            <span class="tdir {'tlong' if is_long else 'tshort'}">{d}</span>
+          </div>
+          <div class="trow-mid">
+            <span class="tscore">{t.get('score','—')}</span>
+            <span class="texit">{t.get('exit_type','—')}</span>
+          </div>
+          <div class="trow-right">
+            <span class="tres {'tres-w' if is_win else 'tres-l'}">{res.upper()}</span>
+            <span class="tpnl {'pnl-pos' if pnl>=0 else 'pnl-neg'}">{'+' if pnl>=0 else ''}${pnl:.2f}</span>
+          </div>
         </div>"""
 
-    return f"""<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>APEX Pro v2</title>
+    last_sig=state.get("last_signal")
+    sig_html=""
+    if last_sig:
+        age=int(time.time())-last_sig.get("time",0)
+        sig_html=f"""
+        <div class="sig-pill">
+          Last signal: <strong>{last_sig['symbol']}</strong> {last_sig['direction'].upper()}
+          · Score {last_sig['score']} · {age}s ago
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>APEX Pro</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600&display=swap');
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#09090f;color:#e0e0f0;font-family:'DM Sans',sans-serif;padding:20px 16px 48px}}
-.hdr{{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1a1a2e;padding-bottom:16px;margin-bottom:20px}}
-.logo{{font-family:'Space Mono',monospace;font-size:17px;font-weight:700}}.logo span{{color:#f0c040}}
-.live{{display:flex;align-items:center;gap:6px;background:rgba(61,255,160,.08);border:1px solid rgba(61,255,160,.2);border-radius:20px;padding:4px 12px;font-size:11px;font-family:'Space Mono',monospace;color:#3dffa0}}
-.dot{{width:6px;height:6px;background:#3dffa0;border-radius:50%;animation:pulse 1.5s infinite}}
-@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}
-.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}}
-.card{{background:#111120;border:1px solid #1a1a2e;border-radius:14px;padding:16px}}
-.lbl{{display:block;font-size:11px;color:#555;font-family:'Space Mono',monospace;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}}
-.val{{font-family:'Space Mono',monospace;font-size:20px;font-weight:700}}
-.green{{color:#3dffa0}}.red{{color:#ff4d6d}}.amber{{color:#f0c040}}
-.sub{{font-size:11px;color:#444;margin-top:3px}}
-.sec{{font-family:'Space Mono',monospace;font-size:10px;color:#444;letter-spacing:.12em;text-transform:uppercase;margin:20px 0 10px;display:flex;align-items:center;gap:8px}}
-.sec::after{{content:'';flex:1;height:1px;background:#1a1a2e}}
-.pos-card{{border-color:rgba(240,192,64,.3);background:rgba(240,192,64,.04)}}
-.pos-hdr{{display:flex;align-items:center;gap:10px;margin-bottom:14px}}
-.sym{{font-family:'Space Mono',monospace;font-size:15px;font-weight:700}}
-.badge{{font-size:10px;font-family:'Space Mono',monospace;padding:2px 10px;border-radius:4px;font-weight:700}}
-.lng{{background:rgba(61,255,160,.15);color:#3dffa0}}.sht{{background:rgba(255,77,109,.15);color:#ff4d6d}}
-.scb{{font-size:11px;color:#f0c040;font-family:'Space Mono',monospace;margin-left:auto}}
-.pg{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}}
-.tpr{{display:flex;gap:8px;flex-wrap:wrap}}
-.tp{{font-size:11px;font-family:'Space Mono',monospace;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.05);color:#666;border:1px solid #222}}
-.tp.hit{{background:rgba(61,255,160,.15);color:#3dffa0;border-color:rgba(61,255,160,.3)}}
-.beb{{margin-top:10px;font-size:11px;color:#3dffa0;font-family:'Space Mono',monospace}}
-.tr{{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.04)}}
-.tsym{{font-family:'Space Mono',monospace;font-size:12px;font-weight:700;min-width:100px}}
-.td{{font-size:10px;font-family:'Space Mono',monospace;padding:2px 8px;border-radius:4px}}
-.tl{{background:rgba(61,255,160,.1);color:#3dffa0}}.ts{{background:rgba(255,77,109,.1);color:#ff4d6d}}
-.tsc{{font-size:11px;color:#555;font-family:'Space Mono',monospace;min-width:30px}}
-.tex{{flex:1;text-align:center;font-size:11px;color:#444}}
-.tp2{{font-family:'Space Mono',monospace;font-size:13px;font-weight:700;min-width:70px;text-align:right}}
-.sr{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px}}
-.sr span:first-child{{color:#555;font-size:12px}}
-.nopos{{text-align:center;padding:24px;color:#333;font-size:13px}}
-</style></head><body>
-<div class="hdr">
-  <div class="logo">APEX <span>Pro</span> <span style="font-size:11px;color:#333">v2</span></div>
-  <div class="live"><span class="dot"></span>{state['status'].upper()}</div>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {{
+  --cream:   #f5f0e8;
+  --cream2:  #ede7d9;
+  --cream3:  #e0d8c8;
+  --green:   #1a6b45;
+  --green2:  #1f8554;
+  --green3:  #2aad6e;
+  --green4:  #d4edd8;
+  --red:     #8b1a2e;
+  --red2:    #cc3355;
+  --red4:    #f2d4d8;
+  --gold:    #8b6914;
+  --gold2:   #b8892a;
+  --ink:     #1c1a16;
+  --ink2:    #3d3a32;
+  --ink3:    #6b6555;
+  --border:  #d4ccb8;
+  --border2: #c4baa8;
+  --shadow:  rgba(28,26,22,0.08);
+}}
+
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+
+body {{
+  background: var(--cream);
+  color: var(--ink);
+  font-family: 'DM Sans', sans-serif;
+  min-height: 100vh;
+  padding: 0 0 60px;
+}}
+
+/* ── Header ── */
+.header {{
+  background: var(--ink);
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}}
+
+.logo {{
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--cream);
+  letter-spacing: 0.04em;
+}}
+
+.logo-accent {{ color: var(--green3); }}
+.logo-ver {{ font-size: 11px; color: var(--ink3); font-family: 'DM Mono', monospace; margin-left: 6px; vertical-align: middle; }}
+
+.status-pill {{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(42,173,110,0.12);
+  border: 1px solid rgba(42,173,110,0.25);
+  border-radius: 30px;
+  padding: 5px 14px;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--green3);
+  letter-spacing: 0.08em;
+}}
+
+.status-dot {{
+  width: 7px; height: 7px;
+  background: var(--green3);
+  border-radius: 50%;
+  animation: blink 1.8s infinite;
+}}
+
+@keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0.2}} }}
+
+/* ── Main layout ── */
+.main {{ padding: 20px 16px; max-width: 520px; margin: 0 auto; }}
+
+/* ── Section label ── */
+.section-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin: 24px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}}
+.section-label::after {{
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}}
+
+/* ── Stat cards ── */
+.stat-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
+
+.stat-card {{
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 16px;
+  box-shadow: 0 2px 12px var(--shadow);
+  position: relative;
+  overflow: hidden;
+}}
+
+.stat-card::before {{
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--cream2);
+}}
+
+.stat-card.green-top::before {{ background: var(--green3); }}
+.stat-card.red-top::before   {{ background: var(--red2); }}
+.stat-card.gold-top::before  {{ background: var(--gold2); }}
+
+.stat-lbl {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-bottom: 8px;
+  display: block;
+}}
+
+.stat-val {{
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+}}
+
+.stat-val.positive {{ color: var(--green2); }}
+.stat-val.negative {{ color: var(--red2); }}
+.stat-val.amber    {{ color: var(--gold); }}
+
+.stat-sub {{
+  font-size: 11px;
+  color: var(--ink3);
+  margin-top: 5px;
+  font-family: 'DM Mono', monospace;
+}}
+
+/* ── Info card ── */
+.info-card {{
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 4px 0;
+  box-shadow: 0 2px 12px var(--shadow);
+  margin-bottom: 4px;
+}}
+
+.info-row {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--cream2);
+  font-size: 13px;
+}}
+
+.info-row:last-child {{ border-bottom: none; }}
+
+.info-row .lbl {{
+  color: var(--ink3);
+  font-size: 12px;
+  font-family: 'DM Mono', monospace;
+}}
+
+.info-row .val {{
+  font-family: 'DM Mono', monospace;
+  font-weight: 500;
+  color: var(--ink);
+  font-size: 13px;
+}}
+
+.score-badge-info {{
+  background: var(--green4);
+  color: var(--green);
+  border: 1px solid rgba(26,107,69,0.2);
+  border-radius: 20px;
+  padding: 2px 12px;
+  font-size: 11px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 500;
+}}
+
+/* ── Position card ── */
+.pos-card {{
+  background: white;
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: 0 4px 20px var(--shadow);
+  position: relative;
+  overflow: hidden;
+}}
+
+.pos-card::before {{
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--green2), var(--green3));
+}}
+
+.pos-top {{
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}}
+
+.pos-left {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+
+.pos-sym {{
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ink);
+}}
+
+.pos-usdt {{ font-size: 14px; color: var(--ink3); }}
+
+.pos-dir {{
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 3px 12px;
+  border-radius: 20px;
+  letter-spacing: 0.08em;
+}}
+
+.side-long  {{ background: var(--green4); color: var(--green);  border: 1px solid rgba(26,107,69,0.2); }}
+.side-short {{ background: var(--red4);   color: var(--red);    border: 1px solid rgba(139,26,46,0.2); }}
+
+.pos-score-wrap {{ text-align: right; }}
+.pos-score-num {{
+  display: block;
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--green2);
+  line-height: 1;
+}}
+.pos-score-lbl {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: var(--ink3);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}}
+
+.pos-metrics {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 18px;
+  background: var(--cream2);
+  border-radius: 12px;
+  padding: 14px;
+}}
+
+.pm {{ display: flex; flex-direction: column; gap: 3px; }}
+.pm-l {{ font-size: 10px; color: var(--ink3); font-family: 'DM Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; }}
+.pm-v {{ font-family: 'DM Mono', monospace; font-size: 14px; font-weight: 500; color: var(--ink); }}
+.loss-col {{ color: var(--red2) !important; }}
+
+/* ── TP track ── */
+.tp-track {{
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 12px;
+}}
+
+.tp-line {{
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+}}
+
+.tp-item {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+}}
+
+.tp-item::before {{
+  content: '';
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--border2);
+  background: white;
+  margin-bottom: 2px;
+}}
+
+.tp-hit::before {{ background: var(--green3); border-color: var(--green3); }}
+
+.tp-label {{ font-size: 10px; font-family: 'DM Mono', monospace; color: var(--ink3); letter-spacing: 0.06em; }}
+.tp-pct   {{ font-size: 11px; font-family: 'DM Mono', monospace; color: var(--ink2); font-weight: 500; }}
+.tp-check {{ font-size: 10px; color: var(--green3); }}
+
+.be-pill {{
+  background: var(--green4);
+  border: 1px solid rgba(26,107,69,0.2);
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-size: 11px;
+  color: var(--green);
+  font-family: 'DM Mono', monospace;
+  text-align: center;
+}}
+
+/* ── No position ── */
+.no-pos {{
+  background: white;
+  border: 1px dashed var(--border2);
+  border-radius: 20px;
+  padding: 32px;
+  text-align: center;
+  color: var(--ink3);
+  font-size: 13px;
+}}
+
+.no-pos-icon {{ font-size: 28px; margin-bottom: 10px; opacity: 0.4; }}
+
+/* ── Trade rows ── */
+.trades-card {{
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px var(--shadow);
+}}
+
+.trow {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--cream2);
+  gap: 8px;
+}}
+
+.trow:last-child {{ border-bottom: none; }}
+
+.trow-left  {{ display: flex; align-items: center; gap: 8px; min-width: 110px; }}
+.trow-mid   {{ display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }}
+.trow-right {{ display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }}
+
+.tsym {{
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}}
+
+.tdir {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+}}
+
+.tlong  {{ background: var(--green4); color: var(--green); }}
+.tshort {{ background: var(--red4);   color: var(--red); }}
+
+.tscore {{
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  color: var(--ink2);
+  font-weight: 500;
+}}
+
+.texit {{
+  font-size: 10px;
+  color: var(--ink3);
+  font-family: 'DM Mono', monospace;
+}}
+
+.tres {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  border-radius: 4px;
+}}
+
+.tres-w {{ background: var(--green4); color: var(--green); }}
+.tres-l {{ background: var(--red4);   color: var(--red); }}
+
+.tpnl {{
+  font-family: 'DM Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+}}
+
+.pnl-pos {{ color: var(--green2); }}
+.pnl-neg {{ color: var(--red2); }}
+
+/* ── Signal pill ── */
+.sig-pill {{
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--ink3);
+  font-family: 'DM Mono', monospace;
+  margin-bottom: 8px;
+}}
+
+.sig-pill strong {{ color: var(--ink); }}
+
+/* ── Footer bar ── */
+.footer-bar {{
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: var(--ink);
+  padding: 10px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink3);
+  letter-spacing: 0.06em;
+}}
+
+.footer-bar span {{ color: var(--cream); opacity: 0.4; }}
+
+.no-trades {{
+  text-align: center;
+  padding: 24px;
+  color: var(--ink3);
+  font-size: 12px;
+  font-family: 'DM Mono', monospace;
+}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">APEX <span class="logo-accent">Pro</span><span class="logo-ver">v2.0</span></div>
+  <div class="status-pill"><span class="status-dot"></span>{state['status'].upper()}</div>
 </div>
-<div class="grid">
-  <div class="card"><span class="lbl">Total P&L</span>
-    <div class="val {'green' if state['total_pnl']>=0 else 'red'}">{'+' if state['total_pnl']>=0 else ''}${state['total_pnl']:.2f}</div>
-    <div class="sub">{total} trades</div></div>
-  <div class="card"><span class="lbl">Win Rate</span>
-    <div class="val amber">{wr:.0f}%</div>
-    <div class="sub">{wins}W / {losses}L</div></div>
-  <div class="card"><span class="lbl">Avg Win</span>
-    <div class="val green">+${avg_win:.2f}</div><div class="sub">per trade</div></div>
-  <div class="card"><span class="lbl">Avg Loss</span>
-    <div class="val red">-${abs(avg_loss):.2f}</div><div class="sub">per trade</div></div>
+
+<div class="main">
+
+  <!-- Stats -->
+  <div class="section-label">Performance</div>
+  <div class="stat-grid">
+    <div class="stat-card {'green-top' if state['total_pnl']>=0 else 'red-top'}">
+      <span class="stat-lbl">Total P&L</span>
+      <div class="stat-val {'positive' if state['total_pnl']>=0 else 'negative'}">{pnl_sign}${state['total_pnl']:.2f}</div>
+      <div class="stat-sub">{total} trades closed</div>
+    </div>
+    <div class="stat-card gold-top">
+      <span class="stat-lbl">Win Rate</span>
+      <div class="stat-val amber">{wr:.0f}%</div>
+      <div class="stat-sub">{wins}W &nbsp;/&nbsp; {losses}L</div>
+    </div>
+    <div class="stat-card green-top">
+      <span class="stat-lbl">Avg Win</span>
+      <div class="stat-val positive">+${avg_win:.2f}</div>
+      <div class="stat-sub">per trade</div>
+    </div>
+    <div class="stat-card red-top">
+      <span class="stat-lbl">Avg Loss</span>
+      <div class="stat-val negative">−${abs(avg_loss):.2f}</div>
+      <div class="stat-sub">per trade</div>
+    </div>
+  </div>
+
+  <!-- Bot info -->
+  <div class="section-label">System</div>
+  <div class="info-card">
+    <div class="info-row">
+      <span class="lbl">Balance</span>
+      <span class="val">${state['balance']:.2f} USDT</span>
+    </div>
+    <div class="info-row">
+      <span class="lbl">Min Score</span>
+      <span class="score-badge-info">{MIN_SCORE} · STRONG only</span>
+    </div>
+    <div class="info-row">
+      <span class="lbl">Trend Blocks</span>
+      <span class="val">{state['trend_blocks']}</span>
+    </div>
+    <div class="info-row">
+      <span class="lbl">Score Blocks</span>
+      <span class="val">{state['score_blocks']}</span>
+    </div>
+    <div class="info-row">
+      <span class="lbl">Last Scan</span>
+      <span class="val">{int(time.time())-state['last_scan']}s ago</span>
+    </div>
+  </div>
+
+  {sig_html}
+
+  <!-- Position -->
+  <div class="section-label">Open Position</div>
+  {pos_html if pos_html else '''
+  <div class="no-pos">
+    <div class="no-pos-icon">◎</div>
+    Scanning for signals...
+  </div>'''}
+
+  <!-- Trades -->
+  <div class="section-label">Recent Trades</div>
+  <div class="trades-card">
+    {tlog if tlog else '<div class="no-trades">No trades recorded yet</div>'}
+  </div>
+
 </div>
-<div class="card" style="margin-bottom:16px">
-  <div class="sr"><span>Balance</span><span style="font-family:'Space Mono',monospace;font-weight:700">${state['balance']:.2f} USDT</span></div>
-  <div class="sr"><span>Min Score</span><span style="color:#f0c040;font-family:'Space Mono',monospace">{MIN_SCORE} (STRONG only)</span></div>
-  <div class="sr"><span>Trend Gate Blocks</span><span style="font-family:'Space Mono',monospace">{state['trend_blocks']}</span></div>
-  <div class="sr"><span>Score Blocks</span><span style="font-family:'Space Mono',monospace">{state['score_blocks']}</span></div>
-  <div class="sr"><span>Last Scan</span><span style="font-family:'Space Mono',monospace">{int(time.time())-state['last_scan']}s ago</span></div>
+
+<div class="footer-bar">
+  <span>APEX PRO v2.0</span>
+  <span>Bybit USDT Perps · {SCAN_INTERVAL}s scan</span>
 </div>
-<div class="sec">Open Position</div>
-{pos_html if pos_html else '<div class="nopos card">No open position — scanning...</div>'}
-<div class="sec">Recent Trades</div>
-<div class="card">{tlog if tlog else '<div class="nopos">No trades yet</div>'}</div>
-<script>setTimeout(()=>location.reload(),15000)</script>
+
+<script>setTimeout(()=>location.reload(), 15000)</script>
 </body></html>"""
 
 @app.get("/api/status")
