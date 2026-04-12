@@ -1,1357 +1,1131 @@
-# APEX Pro - Bybit Futures Bot
-# Signal Engine: OBI + Flow + CVD (gate) + Whale + Funding (score boosters)
+"""
+APEX Pro Bot — v2.0
+═══════════════════════════════════════════════════════════════
+WHAT'S NEW vs v1:
+
+ENTRY — 3-layer system:
+  Layer 1: Trend Gate (all 3 must pass or trade is BLOCKED)
+    • UT Bot direction on 15m candles
+    • ADX > 25 (trend has strength, not chop)
+    • Price above/below VWAP
+
+  Layer 2: Score (minimum 65 required)
+    • OBI            — 35 pts  (unchanged)
+    • CVD + CVD Div  — 35 pts  (upgraded from raw flow)
+    • OI Delta       — 20 pts  (replaces funding rate)
+    • All 3 agree    — +10 pts bonus
+
+EXIT — 3-layer system:
+  Exit 1: Normal TP/SL (bot handles)
+    • TP1 hit → move SL to breakeven immediately
+    • TP2 hit → trail SL
+    • TP3 hit → full close
+
+  Exit 2: Momentum Exhaustion (Jasleen's eye, now coded)
+    • 3 consecutive shrinking candle bodies
+    • Current body < 40% of 10-candle average
+    • CVD slope flattening or turning negative
+    • Only triggers if already > 2% in profit
+
+  Exit 3: Structure Break
+    • CVD divergence confirms reversal
+    • Full close immediately
+
+SCORE THRESHOLD: minimum 65 (MEDIUM signals blocked)
+═══════════════════════════════════════════════════════════════
+"""
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-import uvicorn, os, time, asyncio, hmac, hashlib, urllib.parse, json, random
+import uvicorn, os, time, asyncio, hmac, hashlib, json
 import httpx
-try:
-    import asyncpg
-    HAS_DB = True
-except (ImportError, Exception):
-    HAS_DB = False
-    asyncpg = None
 
 app = FastAPI()
 
-# ============================================================
-#  PERSISTENT DATABASE
-# ============================================================
-DB_URL   = os.getenv("DATABASE_URL") or ""
-_db_pool = None
+# ── ENV ──────────────────────────────────────────────────────
+API_KEY    = os.getenv("BYBIT_API_KEY", "")
+API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+BASE_URL   = "https://api.bybit.com"
+MIN_SCORE  = 75          # only STRONG 75+ and VERY STRONG 80+
+# SIGNAL INVERSION ACTIVE — OBI heavy bids = smart money selling into demand
+# Testing for 2-3 days from April 2026. Revert if win rate drops.
+LEVERAGE   = 2
+SCAN_INTERVAL = 30       # seconds between scans
 
-async def db_connect():
-    global _db_pool
-    if not HAS_DB or not DB_URL:
-        print("[!] No DATABASE_URL - history will not persist")
-        return
-    try:
-        url = DB_URL.replace("postgres://", "postgresql://", 1)
-        _db_pool = await asyncpg.create_pool(url, min_size=1, max_size=5)
-        await db_init()
-        print("[OK] PostgreSQL connected - trade history persists forever")
-    except Exception as e:
-        print(f"[!] DB connect failed ({e}) - in-memory only")
+# ── SUPABASE ─────────────────────────────────────────────────
+SB_URL = os.getenv("SUPABASE_URL", "")
+SB_KEY = os.getenv("SUPABASE_KEY", "")
 
-async def db_init():
-    if not _db_pool: return
-    async with _db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id SERIAL PRIMARY KEY, symbol TEXT, direction TEXT, result TEXT,
-                entry DOUBLE PRECISION, exit_price DOUBLE PRECISION,
-                pnl DOUBLE PRECISION, pnl_pct DOUBLE PRECISION,
-                usdt_size DOUBLE PRECISION, leverage INTEGER,
-                tp1_pct DOUBLE PRECISION, tp2_pct DOUBLE PRECISION,
-                tp3_pct DOUBLE PRECISION, sl_pct DOUBLE PRECISION,
-                score INTEGER, label TEXT, mode TEXT,
-                tp1_hit BOOLEAN DEFAULT FALSE, tp2_hit BOOLEAN DEFAULT FALSE,
-                close_ts BIGINT, created_at TIMESTAMPTZ DEFAULT NOW()
-            )""")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_stats (
-                id INTEGER PRIMARY KEY DEFAULT 1,
-                wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
-                total_pnl DOUBLE PRECISION DEFAULT 0,
-                long_count INTEGER DEFAULT 0, short_count INTEGER DEFAULT 0,
-                traded INTEGER DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW()
-            )""")
-        await conn.execute(
-            "INSERT INTO bot_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
-    print("DB tables ready")
-
-async def db_save_trade(pos, result, exit_price):
-    if not _db_pool: return
-    try:
-        async with _db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO trades (symbol,direction,result,entry,exit_price,pnl,pnl_pct,
-                  usdt_size,leverage,tp1_pct,tp2_pct,tp3_pct,sl_pct,score,label,mode,
-                  tp1_hit,tp2_hit,close_ts)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-            """, pos.get("symbol"), pos.get("direction"), result,
-                pos.get("entry", 0), exit_price, pos.get("pnl", 0),
-                pos.get("pnl_pct", 0), pos.get("usdt_size", 0),
-                pos.get("leverage", 2), pos.get("tp1_pct", 0),
-                pos.get("tp2_pct", 0), pos.get("tp3_pct", 0),
-                pos.get("sl_pct", 0), pos.get("score", 0),
-                pos.get("label", ""), pos.get("mode", "lead"),
-                bool(pos.get("tp1_hit", False)),
-                bool(pos.get("tp2_hit", False)), int(time.time()))
-            w  = 1 if result == "win"   else 0
-            l  = 1 if result == "loss"  else 0
-            lg = 1 if pos.get("direction") == "long"  else 0
-            sh = 1 if pos.get("direction") == "short" else 0
-            await conn.execute("""
-                UPDATE bot_stats SET
-                    wins=wins+$1, losses=losses+$2, total_pnl=total_pnl+$3,
-                    long_count=long_count+$4, short_count=short_count+$5,
-                    traded=traded+1, updated_at=NOW()
-                WHERE id=1""", w, l, pos.get("pnl", 0), lg, sh)
-    except Exception as e:
-        print(f"DB save error: {e}")
-
-async def db_load_trades(limit=100):
-    if not _db_pool: return []
-    try:
-        async with _db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM trades ORDER BY close_ts DESC LIMIT $1", limit)
-            return [dict(r) for r in rows]
-    except Exception as e:
-        print(f"DB load error: {e}"); return []
-
-async def db_load_stats():
-    if not _db_pool: return {}
-    try:
-        async with _db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM bot_stats WHERE id=1")
-            return dict(row) if row else {}
-    except Exception as e:
-        print(f"DB stats error: {e}"); return {}
-
-# ============================================================
-#  STATE
-# ============================================================
+# ── IN-MEMORY STATE ──────────────────────────────────────────
 state = {
-    "api_key":        os.getenv("BYBIT_API_KEY") or "",
-    "api_secret":     os.getenv("BYBIT_API_SECRET") or "",
-    "leverage":       2,
-    "max_pos":        3,
-    "trail_pct":      10.0,
-    "max_daily_loss": 5.0,
-    "bot_on":         True,
-    "balance":        0.0,
-    "positions":      {},
-    "trades":         [],
-    "pending":        [],
-    "stats":          {"scanned":0,"signals":0,"traded":0,"long":0,"short":0},
-    "wins":           0,
-    "losses":         0,
-    "today_pnl":      0.0,
-    "total_pnl":      0.0,
-    "daily_loss_hit": False,
-    "signal_log":     [],
-    "start_balance":  0.0,
-    "risk_pct":       2.0,
-    "signal_mode":    "medium",
-    "min_score":      45,
-    "use_mtf":        False,
+    "wins": 0, "losses": 0, "total_pnl": 0.0,
+    "trades": [], "position": None, "balance": 0.0,
+    "last_scan": 0, "status": "starting",
+    "trend_blocks": 0,   # count how many signals trend gate blocked
+    "score_blocks": 0,   # count how many signals score blocked
 }
 
-TOP50     = []
-BYBIT     = "https://api.bybit.com"
-MIN_ORDER = 10.0
+# ═══════════════════════════════════════════════════════════════
+#  BYBIT HELPERS
+# ═══════════════════════════════════════════════════════════════
 
-# ============================================================
-#  BYBIT API
-# ============================================================
-def by_sign(secret, ts, params):
-    msg = ts + state["api_key"] + "5000" + params
-    return hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+def bybit_sign(params: dict) -> dict:
+    params["api_key"]   = API_KEY
+    params["timestamp"] = str(int(time.time() * 1000))
+    params["recv_window"] = "5000"
+    sorted_params = sorted(params.items())
+    query = "&".join(f"{k}={v}" for k, v in sorted_params)
+    sig = hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+    params["sign"] = sig
+    return params
 
-async def by_get(path, params={}, signed=False):
-    p  = dict(params)
-    ts = str(int(time.time() * 1000))
-    qs = urllib.parse.urlencode(p)
-    h  = {
-        "X-BAPI-API-KEY":      state["api_key"],
-        "X-BAPI-TIMESTAMP":    ts,
-        "X-BAPI-RECV-WINDOW":  "5000",
-    }
+async def bybit_get(path: str, params: dict = {}, signed: bool = False) -> dict:
     if signed:
-        h["X-BAPI-SIGN"] = by_sign(state["api_secret"], ts, qs)
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(f"{BYBIT}{path}", params=p, headers=h)
+        params = bybit_sign(params)
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(BASE_URL + path, params=params)
         return r.json()
 
-async def by_post(path, body, signed=True):
-    ts = str(int(time.time() * 1000))
-    bs = json.dumps(body)
-    h  = {
-        "X-BAPI-API-KEY":      state["api_key"],
-        "X-BAPI-TIMESTAMP":    ts,
-        "X-BAPI-RECV-WINDOW":  "5000",
-        "Content-Type":        "application/json",
-    }
-    if signed:
-        h["X-BAPI-SIGN"] = by_sign(state["api_secret"], ts, bs)
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{BYBIT}{path}", content=bs, headers=h)
+async def bybit_post(path: str, body: dict) -> dict:
+    body = bybit_sign(body)
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.post(BASE_URL + path, json=body)
         return r.json()
 
-async def get_balance():
+async def get_balance() -> float:
     try:
-        d = await by_get(
-            "/v5/account/wallet-balance",
-            {"accountType": "UNIFIED"}, signed=True)
-        if d.get("retCode") == 0:
-            for w in d.get("result", {}).get("list", []):
-                for c in w.get("coin", []):
-                    if c.get("coin") == "USDT":
-                        b = float(c.get("walletBalance") or
-                                  c.get("equity") or 0)
-                        if b > 0: return b
-    except: pass
+        r = await bybit_get("/v5/account/wallet-balance",
+                            {"accountType": "UNIFIED"}, signed=True)
+        coins = r["result"]["list"][0]["coin"]
+        for c in coins:
+            if c["coin"] == "USDT":
+                return float(c["availableToWithdraw"])
+    except Exception as e:
+        print(f"Balance error: {e}")
     return 0.0
 
-async def get_price(symbol):
-    d = await by_get("/v5/market/tickers",
-                     {"category": "linear", "symbol": symbol})
-    items = d.get("result", {}).get("list", [])
-    return float(items[0].get("lastPrice", 0)) if items else 0.0
-
-async def set_leverage(symbol):
+async def get_klines(symbol: str, interval: str = "5", limit: int = 50) -> list:
+    """Fetch OHLCV candles. interval: '5'=5m, '15'=15m"""
     try:
-        lev = str(state["leverage"])
-        await by_post("/v5/position/set-leverage", {
-            "category":    "linear",
-            "symbol":      symbol,
-            "buyLeverage": lev,
-            "sellLeverage":lev,
+        r = await bybit_get("/v5/market/kline", {
+            "category": "linear", "symbol": symbol,
+            "interval": interval, "limit": str(limit)
         })
-    except: pass
+        # Returns newest first — reverse to oldest first
+        return list(reversed(r["result"]["list"]))
+    except Exception as e:
+        print(f"Klines error {symbol}: {e}")
+        return []
 
-async def place_futures_order(symbol, side, qty, tp=None, sl=None):
+async def get_orderbook(symbol: str, limit: int = 50) -> dict:
+    try:
+        r = await bybit_get("/v5/market/orderbook", {
+            "category": "linear", "symbol": symbol, "limit": str(limit)
+        })
+        return r.get("result", {})
+    except Exception as e:
+        print(f"Orderbook error {symbol}: {e}")
+        return {}
+
+async def get_recent_trades(symbol: str, limit: int = 200) -> list:
+    try:
+        r = await bybit_get("/v5/market/recent-trade", {
+            "category": "linear", "symbol": symbol, "limit": str(limit)
+        })
+        return r.get("result", {}).get("list", [])
+    except Exception as e:
+        print(f"Recent trades error {symbol}: {e}")
+        return []
+
+async def get_open_interest(symbol: str) -> dict:
+    """Get OI for last 5 periods to calculate delta"""
+    try:
+        r = await bybit_get("/v5/market/open-interest", {
+            "category": "linear", "symbol": symbol,
+            "intervalTime": "5min", "limit": "5"
+        })
+        return r.get("result", {}).get("list", [])
+    except Exception as e:
+        print(f"OI error {symbol}: {e}")
+        return []
+
+async def get_tickers(symbol: str) -> dict:
+    try:
+        r = await bybit_get("/v5/market/tickers", {
+            "category": "linear", "symbol": symbol
+        })
+        items = r.get("result", {}).get("list", [])
+        return items[0] if items else {}
+    except Exception as e:
+        print(f"Ticker error {symbol}: {e}")
+        return {}
+
+async def place_order(symbol: str, side: str, qty: float,
+                      sl: float, tp1: float) -> dict:
     body = {
-        "category":    "linear",
-        "symbol":      symbol,
-        "side":        side,
-        "orderType":   "Market",
-        "qty":         str(qty),
-        "timeInForce": "IOC",
+        "category": "linear", "symbol": symbol,
+        "side": "Buy" if side == "long" else "Sell",
+        "orderType": "Market", "qty": str(qty),
+        "stopLoss": str(sl), "takeProfit": str(tp1),
+        "tpslMode": "Full", "leverage": str(LEVERAGE),
+        "positionIdx": "0",
     }
-    if tp: body["takeProfit"] = str(tp)
-    if sl: body["stopLoss"]   = str(sl)
-    d = await by_post("/v5/order/create", body)
-    if d.get("retCode") != 0:
-        raise Exception(d.get("retMsg", f"Order error {d.get('retCode')}"))
-    return d.get("result", {})
+    return await bybit_post("/v5/order/create", body)
 
-async def close_futures_position(symbol, side, qty):
+async def close_position(symbol: str, qty: float, side: str) -> dict:
     close_side = "Sell" if side == "long" else "Buy"
     body = {
-        "category":    "linear",
-        "symbol":      symbol,
-        "side":        close_side,
-        "orderType":   "Market",
-        "qty":         str(qty),
-        "timeInForce": "IOC",
-        "reduceOnly":  True,
+        "category": "linear", "symbol": symbol,
+        "side": close_side, "orderType": "Market",
+        "qty": str(qty), "reduceOnly": True,
+        "positionIdx": "0",
     }
-    d = await by_post("/v5/order/create", body)
-    if d.get("retCode") != 0:
-        print(f"Close failed {symbol}: {d.get('retMsg')}")
-    return d.get("result", {})
+    return await bybit_post("/v5/order/create", body)
 
-async def cancel_all_orders(symbol):
-    try:
-        await by_post("/v5/order/cancel-all",
-                      {"category": "linear", "symbol": symbol})
-    except: pass
+async def set_sl(symbol: str, sl_price: float, side: str) -> dict:
+    body = {
+        "category": "linear", "symbol": symbol,
+        "stopLoss": str(sl_price),
+        "positionIdx": "0",
+    }
+    return await bybit_post("/v5/position/trading-stop", body)
 
-async def fetch_all_symbols():
-    try:
-        d = await by_get("/v5/market/instruments-info",
-                         {"category": "linear", "limit": 1000})
-        syms = []
-        for item in d.get("result", {}).get("list", []):
-            if (item.get("status") == "Trading" and
-                    item.get("settleCoin") == "USDT" and
-                    item.get("symbol", "").endswith("USDT")):
-                syms.append(item["symbol"])
-        syms.sort()
-        return syms
-    except Exception as e:
-        print(f"fetch_all_symbols error: {e}")
-        return TOP50 or ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+# ═══════════════════════════════════════════════════════════════
+#  LAYER 1 — TREND GATE
+#  All 3 must agree with trade direction or signal is BLOCKED
+# ═══════════════════════════════════════════════════════════════
 
-# ============================================================
-#  LEAD SIGNAL 1 -- ORDER BOOK IMBALANCE (OBI)
-#  Gate signal. Detects where liquidity is sitting RIGHT NOW.
-#  OBI > 0.65 = buyers dominating = LONG
-#  OBI < 0.35 = sellers dominating = SHORT
-# ============================================================
-async def get_orderbook_imbalance(symbol):
-    try:
-        d = await by_get("/v5/market/orderbook",
-                         {"category": "linear", "symbol": symbol, "limit": 50})
-        r    = d.get("result", {})
-        bids = r.get("b", [])
-        asks = r.get("a", [])
-        if not bids or not asks:
-            return {"obi": 0.5, "signal": "neutral"}
-        bid_vol = sum(float(b[1]) for b in bids)
-        ask_vol = sum(float(a[1]) for a in asks)
-        total   = bid_vol + ask_vol
-        if total == 0:
-            return {"obi": 0.5, "signal": "neutral"}
-        obi = bid_vol / total
-        # Stacking check -- top 5 vs bottom 5 levels
-        top5b = sum(float(b[1]) for b in bids[:5])
-        bot5b = (sum(float(b[1]) for b in bids[-5:])
-                 if len(bids) >= 10 else top5b)
-        top5a = sum(float(a[1]) for a in asks[:5])
-        bot5a = (sum(float(a[1]) for a in asks[-5:])
-                 if len(asks) >= 10 else top5a)
-        bid_stack = top5b > bot5b * 1.5
-        ask_stack = top5a > bot5a * 1.5
-        if   obi > 0.65 or (obi > 0.58 and bid_stack): signal = "long"
-        elif obi < 0.35 or (obi < 0.42 and ask_stack): signal = "short"
-        else:                                            signal = "neutral"
-        return {
-            "obi":       round(obi, 3),
-            "signal":    signal,
-            "bid_vol":   round(bid_vol, 2),
-            "ask_vol":   round(ask_vol, 2),
-            "bid_stack": bid_stack,
-            "ask_stack": ask_stack,
-        }
-    except Exception as e:
-        print(f"OBI error {symbol}: {e}")
-        return {"obi": 0.5, "signal": "neutral"}
+def calc_atr(candles: list, period: int = 14) -> float:
+    """ATR from OHLCV candles"""
+    if len(candles) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        h = float(candles[i][2])
+        l = float(candles[i][3])
+        pc = float(candles[i-1][4])
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    return sum(trs[-period:]) / period
 
-# ============================================================
-#  LEAD SIGNAL 2 -- TRADE FLOW AGGRESSION
-#  Gate signal. Counts actual executed buy vs sell volume.
-#  Cannot be spoofed. Confirms OBI is genuine.
-#  buy_ratio > 0.60 = aggressive buyers = LONG
-#  buy_ratio < 0.40 = aggressive sellers = SHORT
-# ============================================================
-async def get_trade_flow_aggression(symbol):
-    try:
-        d = await by_get("/v5/market/recent-trade",
-                         {"category": "linear", "symbol": symbol, "limit": 200})
-        trades = d.get("result", {}).get("list", [])
-        if not trades:
-            return {"buy_ratio": 0.5, "signal": "neutral", "trade_count": 0}
-        buy_vol  = sum(float(t["size"]) for t in trades
-                       if t.get("side") == "Buy")
-        sell_vol = sum(float(t["size"]) for t in trades
-                       if t.get("side") == "Sell")
-        total    = buy_vol + sell_vol
-        if total == 0:
-            return {"buy_ratio": 0.5, "signal": "neutral",
-                    "trade_count": len(trades)}
-        buy_ratio = buy_vol / total
-        # Acceleration check -- newest 50 vs oldest 50
-        recent = trades[:50]
-        older  = trades[150:] if len(trades) >= 150 else []
-        accel_buy = accel_sell = False
-        if older:
-            r_buy = sum(float(t["size"]) for t in recent
-                        if t.get("side") == "Buy")
-            r_tot = sum(float(t["size"]) for t in recent) or 1
-            o_buy = sum(float(t["size"]) for t in older
-                        if t.get("side") == "Buy")
-            o_tot = sum(float(t["size"]) for t in older) or 1
-            accel_buy  = (r_buy / r_tot) > (o_buy / o_tot) * 1.2
-            accel_sell = (r_buy / r_tot) < (o_buy / o_tot) * 0.8
-        if   buy_ratio > 0.60 or (buy_ratio > 0.53 and accel_buy):
-            signal = "long"
-        elif buy_ratio < 0.40 or (buy_ratio < 0.47 and accel_sell):
-            signal = "short"
+def calc_adx(candles: list, period: int = 14) -> float:
+    """ADX — measures trend strength regardless of direction"""
+    if len(candles) < period * 2:
+        return 0.0
+    plus_dms, minus_dms, trs = [], [], []
+    for i in range(1, len(candles)):
+        h  = float(candles[i][2]);   ph = float(candles[i-1][2])
+        l  = float(candles[i][3]);   pl = float(candles[i-1][3])
+        pc = float(candles[i-1][4])
+        plus_dm  = max(h - ph, 0) if (h - ph) > (pl - l) else 0
+        minus_dm = max(pl - l, 0) if (pl - l) > (h - ph) else 0
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        plus_dms.append(plus_dm); minus_dms.append(minus_dm); trs.append(tr)
+
+    def smooth(vals, p):
+        s = sum(vals[:p])
+        result = [s]
+        for v in vals[p:]:
+            s = s - s/p + v
+            result.append(s)
+        return result
+
+    s_tr   = smooth(trs,       period)
+    s_plus = smooth(plus_dms,  period)
+    s_min  = smooth(minus_dms, period)
+
+    dx_vals = []
+    for i in range(len(s_tr)):
+        if s_tr[i] == 0:
+            continue
+        di_plus  = 100 * s_plus[i] / s_tr[i]
+        di_minus = 100 * s_min[i]  / s_tr[i]
+        dsum = di_plus + di_minus
+        if dsum == 0:
+            continue
+        dx_vals.append(100 * abs(di_plus - di_minus) / dsum)
+
+    if not dx_vals:
+        return 0.0
+    return sum(dx_vals[-period:]) / min(len(dx_vals), period)
+
+def calc_ut_bot(candles: list, atr_mult: float = 1.0, period: int = 10) -> str:
+    """
+    UT Bot — ATR trailing stop that flips direction.
+    Returns 'long', 'short', or 'neutral'
+    Uses 15m candles for trend direction.
+    """
+    if len(candles) < period + 5:
+        return "neutral"
+
+    atr = calc_atr(candles, period)
+    if atr == 0:
+        return "neutral"
+
+    trail = float(candles[-2][4])  # init
+    direction = "neutral"
+
+    for i in range(1, len(candles)):
+        close = float(candles[i][4])
+        prev_close = float(candles[i-1][4])
+
+        stop_dist = atr_mult * atr
+        if close > trail:
+            new_trail = close - stop_dist
+            trail = max(trail, new_trail)
         else:
-            signal = "neutral"
-        return {
-            "buy_ratio":   round(buy_ratio, 3),
-            "signal":      signal,
-            "trade_count": len(trades),
-            "accel_buy":   accel_buy,
-            "accel_sell":  accel_sell,
-        }
-    except Exception as e:
-        print(f"Trade flow error {symbol}: {e}")
-        return {"buy_ratio": 0.5, "signal": "neutral", "trade_count": 0}
+            new_trail = close + stop_dist
+            trail = min(trail, new_trail)
 
-# ============================================================
-#  LEAD SIGNAL 3 -- CVD DIVERGENCE (strongest predictor)
-#  Gate signal. Cumulative Volume Delta vs Price.
-#
-#  CVD = running total of (buy_vol - sell_vol) per candle
-#  Divergence cases:
-#    Price UP  + CVD FLAT/DOWN = weak rally, fake breakout -> SHORT
-#    Price DOWN + CVD FLAT/UP  = weak selloff, fake breakdown -> LONG
-#    Price FLAT + CVD RISING   = silent accumulation -> LONG imminent
-#    Price FLAT + CVD FALLING  = silent distribution -> SHORT imminent
-#
-#  This catches moves BEFORE the candle forms.
-# ============================================================
-async def get_cvd_divergence(symbol):
-    try:
-        # Get last 20 one-minute klines for price trend
-        kd = await by_get("/v5/market/kline", {
-            "category": "linear",
-            "symbol":   symbol,
-            "interval": "1",
-            "limit":    20,
-        })
-        klines = kd.get("result", {}).get("list", [])
-        if len(klines) < 10:
-            return {"signal": "neutral", "cvd_delta": 0, "price_delta": 0}
+        if close > trail and prev_close <= trail:
+            direction = "long"
+        elif close < trail and prev_close >= trail:
+            direction = "short"
 
-        klines = list(reversed(klines))  # oldest first
-        closes = [float(k[4]) for k in klines]
+    return direction
 
-        # Get recent trades to build CVD
-        td = await by_get("/v5/market/recent-trade", {
-            "category": "linear",
-            "symbol":   symbol,
-            "limit":    200,
-        })
-        trades = td.get("result", {}).get("list", [])
-        if not trades:
-            return {"signal": "neutral", "cvd_delta": 0, "price_delta": 0}
+def calc_vwap(candles: list) -> float:
+    """Session VWAP from candles"""
+    total_pv = 0.0
+    total_v  = 0.0
+    for c in candles:
+        h = float(c[2]); l = float(c[3]); cl = float(c[4]); v = float(c[5])
+        typical = (h + l + cl) / 3
+        total_pv += typical * v
+        total_v  += v
+    return total_pv / total_v if total_v > 0 else 0.0
 
-        trades = list(reversed(trades))  # oldest first
+async def check_trend_gate(symbol: str, direction: str) -> tuple[bool, dict]:
+    """
+    Layer 1 — Trend Gate
+    Returns (passes: bool, details: dict)
+    All 3 must agree with direction for gate to pass.
+    """
+    candles_15m = await get_klines(symbol, interval="15", limit=60)
+    candles_5m  = await get_klines(symbol, interval="5",  limit=30)
 
-        # Split into two halves -- compare CVD trend vs price trend
-        mid = len(trades) // 2
-        first_half  = trades[:mid]
-        second_half = trades[mid:]
+    if not candles_15m or not candles_5m:
+        return False, {"reason": "no candle data"}
 
-        def cvd(t_list):
-            b = sum(float(t["size"]) for t in t_list if t.get("side") == "Buy")
-            s = sum(float(t["size"]) for t in t_list if t.get("side") == "Sell")
-            return b - s
+    # ① UT Bot on 15m
+    ut_dir = calc_ut_bot(candles_15m)
+    ut_pass = (ut_dir == direction) or (ut_dir == "neutral")
 
-        cvd_first  = cvd(first_half)
-        cvd_second = cvd(second_half)
-        cvd_delta  = cvd_second - cvd_first  # positive = CVD rising
+    # ② ADX > 25
+    adx = calc_adx(candles_15m)
+    adx_pass = adx >= 25
 
-        # Price direction over same window
-        price_start = closes[0] if closes else 0
-        price_end   = closes[-1] if closes else 0
-        price_delta = price_end - price_start  # positive = price rising
-
-        # Normalize to detect divergence
-        price_up   = price_delta  >  price_start * 0.001   # >0.1% up
-        price_down = price_delta  < -price_start * 0.001   # >0.1% down
-        price_flat = not price_up and not price_down
-
-        cvd_rising  = cvd_delta > 0
-        cvd_falling = cvd_delta < 0
-
-        signal = "neutral"
-
-        # Silent accumulation: price flat/down but CVD rising
-        # Buyers absorbing every sell -> breakout up coming
-        if (price_flat or price_down) and cvd_rising:
-            signal = "long"
-
-        # Silent distribution: price flat/up but CVD falling
-        # Sellers absorbing every buy -> breakdown coming
-        elif (price_flat or price_up) and cvd_falling:
-            signal = "short"
-
-        # Strong confirmation: price AND CVD agree
-        elif price_up and cvd_rising:
-            signal = "long"    # genuine uptrend confirmed
-        elif price_down and cvd_falling:
-            signal = "short"   # genuine downtrend confirmed
-
-        return {
-            "signal":      signal,
-            "cvd_delta":   round(cvd_delta, 2),
-            "price_delta": round(price_delta, 6),
-            "cvd_rising":  cvd_rising,
-            "price_up":    price_up,
-            "divergence":  (price_up and cvd_falling) or
-                           (price_down and cvd_rising),
-        }
-    except Exception as e:
-        print(f"CVD error {symbol}: {e}")
-        return {"signal": "neutral", "cvd_delta": 0, "price_delta": 0}
-
-# ============================================================
-#  SCORE BOOSTER 1 -- WHALE PRINT DETECTION
-#  Not a gate. Adds +15 pts to score when detected.
-#  A single trade > 3x average trade size = institutional order.
-#  Whales buy BEFORE price moves, not with it.
-# ============================================================
-async def get_whale_print(symbol):
-    try:
-        d = await by_get("/v5/market/recent-trade", {
-            "category": "linear",
-            "symbol":   symbol,
-            "limit":    100,
-        })
-        trades = d.get("result", {}).get("list", [])
-        if len(trades) < 10:
-            return {"detected": False, "direction": "neutral", "size_ratio": 0}
-
-        sizes    = [float(t["size"]) for t in trades]
-        avg_size = sum(sizes) / len(sizes)
-        max_size = max(sizes)
-        ratio    = max_size / avg_size if avg_size > 0 else 0
-
-        if ratio >= 3.0:
-            # Find the whale trade and its direction
-            whale_trade = max(trades, key=lambda t: float(t["size"]))
-            direction   = ("long"  if whale_trade.get("side") == "Buy"
-                           else "short")
-            # Recency check -- whale in last 20 trades = more relevant
-            recent_idx  = next(
-                (i for i, t in enumerate(trades)
-                 if float(t["size"]) == max_size), len(trades))
-            recency_bonus = recent_idx < 20
-
-            return {
-                "detected":      True,
-                "direction":     direction,
-                "size_ratio":    round(ratio, 1),
-                "recency_bonus": recency_bonus,
-            }
-        return {"detected": False, "direction": "neutral", "size_ratio": round(ratio, 1)}
-    except Exception as e:
-        print(f"Whale error {symbol}: {e}")
-        return {"detected": False, "direction": "neutral", "size_ratio": 0}
-
-# ============================================================
-#  SCORE BOOSTER 2 -- FUNDING RATE MOMENTUM
-#  Not a gate. Adds +10 pts to score when aligned.
-#  Rapidly negative funding = shorts being squeezed = LONG
-#  Rapidly positive funding = longs being squeezed = SHORT
-# ============================================================
-async def get_funding_momentum(symbol):
-    try:
-        td    = await by_get("/v5/market/tickers",
-                             {"category": "linear", "symbol": symbol})
-        items = td.get("result", {}).get("list", [])
-        current = float(items[0].get("fundingRate", 0)) * 100 if items else 0
-        hd    = await by_get("/v5/market/funding/history",
-                             {"category": "linear", "symbol": symbol, "limit": 10})
-        hist  = hd.get("result", {}).get("list", [])
-        rates = ([float(h["fundingRate"]) * 100 for h in hist]
-                 if hist else [current])
-        avg      = sum(rates) / len(rates) if rates else current
-        momentum = current - avg
-        if   current < -0.05 and momentum < -0.02: signal = "long"
-        elif current >  0.05 and momentum >  0.02: signal = "short"
-        else:                                       signal = "neutral"
-        return {
-            "rate":     round(current, 4),
-            "avg":      round(avg, 4),
-            "momentum": round(momentum, 4),
-            "signal":   signal,
-        }
-    except Exception as e:
-        print(f"Funding error {symbol}: {e}")
-        return {"rate": 0, "avg": 0, "momentum": 0, "signal": "neutral"}
-
-# ============================================================
-#  MASTER SIGNAL ENGINE
-#
-#  GATE (must pass -- 2 of 3 minimum):
-#    OBI + Flow + CVD
-#    CVD required if only 2/3 agree (no CVD = no trade)
-#
-#  SCORE BOOSTERS (add pts, do not gate):
-#    Whale print aligned  -> +15 pts
-#    Funding aligned      -> +10 pts
-#    All 3 gate agree     -> +10 pts (existing)
-# ============================================================
-async def master_signal(symbol):
-    try:
-        # Run all 5 indicators in parallel
-        obi, flow, cvd, whale, fund = await asyncio.gather(
-            get_orderbook_imbalance(symbol),
-            get_trade_flow_aggression(symbol),
-            get_cvd_divergence(symbol),
-            get_whale_print(symbol),
-            get_funding_momentum(symbol),
-        )
-    except Exception as e:
-        print(f"Master signal error {symbol}: {e}")
-        return None, {}
-
-    obi_sig  = obi.get("signal",  "neutral")
-    flow_sig = flow.get("signal", "neutral")
-    cvd_sig  = cvd.get("signal",  "neutral")
-
-    # Gate voting -- OBI + Flow + CVD
-    gate_signals  = [obi_sig, flow_sig, cvd_sig]
-    long_votes    = gate_signals.count("long")
-    short_votes   = gate_signals.count("short")
-    cvd_is_long   = cvd_sig == "long"
-    cvd_is_short  = cvd_sig == "short"
-
-    # Fire rules:
-    #   All 3 agree                       -> fire
-    #   OBI + Flow agree + CVD neutral    -> fire (strong combo)
-    #   CVD + any one other agree         -> fire (CVD required)
-    #   Only 2 agree but CVD disagrees    -> blocked
-    obi_flow_long  = obi_sig  == "long"  and flow_sig == "long"
-    obi_flow_short = obi_sig  == "short" and flow_sig == "short"
-    cvd_obi_long   = cvd_is_long  and obi_sig  == "long"
-    cvd_obi_short  = cvd_is_short and obi_sig  == "short"
-    cvd_flow_long  = cvd_is_long  and flow_sig == "long"
-    cvd_flow_short = cvd_is_short and flow_sig == "short"
-
-    if long_votes == 3 or obi_flow_long or cvd_obi_long or cvd_flow_long:
-        direction = "long"
-    elif (short_votes == 3 or obi_flow_short or
-          cvd_obi_short or cvd_flow_short):
-        direction = "short"
+    # ③ Price vs VWAP
+    vwap = calc_vwap(candles_5m)
+    price = float(candles_5m[-1][4])
+    if direction == "long":
+        vwap_pass = price > vwap
     else:
-        direction = None
+        vwap_pass = price < vwap
+
+    all_pass = ut_pass and adx_pass and vwap_pass
 
     details = {
-        # Gate signals
-        "obi":          obi.get("obi", 0.5),
-        "obi_signal":   obi_sig,
-        "bid_stack":    obi.get("bid_stack", False),
-        "buy_ratio":    flow.get("buy_ratio", 0.5),
-        "flow_signal":  flow_sig,
-        "accel_buy":    flow.get("accel_buy", False),
-        "cvd_delta":    cvd.get("cvd_delta", 0),
-        "cvd_signal":   cvd_sig,
-        "cvd_diverge":  cvd.get("divergence", False),
-        # Boosters
-        "whale":        whale.get("detected", False),
-        "whale_dir":    whale.get("direction", "neutral"),
-        "whale_ratio":  whale.get("size_ratio", 0),
-        "whale_recent": whale.get("recency_bonus", False),
-        "funding_rate": fund.get("rate", 0),
-        "fund_signal":  fund.get("signal", "neutral"),
-        # Vote counts
-        "long_votes":   long_votes,
-        "short_votes":  short_votes,
+        "ut_bot": ut_dir, "ut_pass": ut_pass,
+        "adx": round(adx, 1), "adx_pass": adx_pass,
+        "vwap": round(vwap, 4), "price": round(price, 4),
+        "vwap_pass": vwap_pass,
+        "passed": all_pass,
     }
-    return direction, details
 
-# ============================================================
-#  SIGNAL SCORER -- 0 to 100
-#
-#  Gate components (max 70 pts total):
-#    OBI strength     -> 0-25 pts
-#    Flow strength    -> 0-25 pts
-#    CVD strength     -> 0-20 pts  (weighted higher)
-#
-#  Score boosters (max 35 pts):
-#    Whale aligned    -> +15 pts
-#    Whale recent     -> +5 extra
-#    Funding aligned  -> +10 pts
-#    All 3 gate agree -> +10 pts  (existing bonus)
-#
-#  CVD divergence bonus:
-#    If price/CVD diverge (fake move detected) -> +5 pts extra
-# ============================================================
-def score_signal(direction, details):
+    if not all_pass:
+        fails = []
+        if not ut_pass:  fails.append(f"UT Bot={ut_dir}")
+        if not adx_pass: fails.append(f"ADX={adx:.1f}<25")
+        if not vwap_pass: fails.append(f"Price {'below' if direction=='long' else 'above'} VWAP")
+        details["reason"] = " | ".join(fails)
+
+    return all_pass, details
+
+# ═══════════════════════════════════════════════════════════════
+#  LAYER 2 — ENTRY SCORE
+#  OBI (35) + CVD/CVD-Div (35) + OI Delta (20) + bonus (10)
+#  Minimum score: 65
+# ═══════════════════════════════════════════════════════════════
+
+async def get_obi(symbol: str) -> dict:
+    """
+    Order Book Imbalance
+    OBI = bid_vol / (bid_vol + ask_vol) across top 50 levels
+    Bid stacking: top 5 bid levels 1.5x larger than bottom 5
+    """
+    ob = await get_orderbook(symbol, limit=50)
+    bids = ob.get("b", [])
+    asks = ob.get("a", [])
+
+    if not bids or not asks:
+        return {"obi": 0.5, "bid_stack": False}
+
+    bid_vol = sum(float(b[1]) for b in bids)
+    ask_vol = sum(float(a[1]) for a in asks)
+    total   = bid_vol + ask_vol
+    obi     = bid_vol / total if total > 0 else 0.5
+
+    # Bid stacking check
+    bid_vols = [float(b[1]) for b in bids]
+    top5_avg = sum(bid_vols[:5]) / 5 if len(bid_vols) >= 5 else 0
+    bot5_avg = sum(bid_vols[-5:]) / 5 if len(bid_vols) >= 5 else 0
+    bid_stack = top5_avg >= bot5_avg * 1.5
+
+    return {"obi": round(obi, 4), "bid_stack": bid_stack}
+
+async def get_cvd(symbol: str) -> dict:
+    """
+    Cumulative Volume Delta + CVD Divergence
+    CVD = sum(buy_vol - sell_vol) across last 200 trades
+    Divergence: price new high but CVD lower high = fake move
+    Acceleration: last 50 trades more aggressive than first 50
+    """
+    trades = await get_recent_trades(symbol, limit=200)
+    if not trades:
+        return {"buy_ratio": 0.5, "cvd_delta": 0, "accel_buy": False, "cvd_diverge": False}
+
+    buy_vol  = sum(float(t["size"]) for t in trades if t.get("side") == "Buy")
+    sell_vol = sum(float(t["size"]) for t in trades if t.get("side") == "Sell")
+    total_vol = buy_vol + sell_vol
+    buy_ratio = buy_vol / total_vol if total_vol > 0 else 0.5
+    cvd_delta = buy_vol - sell_vol
+
+    # Acceleration: last 50 vs first 50
+    first50 = trades[-50:] if len(trades) >= 100 else trades[:len(trades)//2]
+    last50  = trades[:50]  if len(trades) >= 100 else trades[len(trades)//2:]
+    first_buy = sum(float(t["size"]) for t in first50 if t.get("side") == "Buy")
+    last_buy  = sum(float(t["size"]) for t in last50  if t.get("side") == "Buy")
+    accel_buy = last_buy > first_buy * 1.2
+
+    # CVD divergence: compare early vs late CVD slope vs price
+    first_cvd = first_buy - sum(float(t["size"]) for t in first50 if t.get("side") == "Sell")
+    last_cvd  = last_buy  - sum(float(t["size"]) for t in last50  if t.get("side") == "Sell")
+    first_price = float(first50[-1]["price"]) if first50 else 0
+    last_price  = float(last50[0]["price"])   if last50  else 0
+
+    # Divergence: price up but CVD down (or vice versa) = fake move
+    cvd_diverge = False
+    if first_price > 0 and last_price > 0:
+        price_up = last_price > first_price
+        cvd_up   = last_cvd  > first_cvd
+        cvd_diverge = (price_up != cvd_up)  # they disagree = divergence
+
+    return {
+        "buy_ratio":  round(buy_ratio, 4),
+        "cvd_delta":  round(cvd_delta, 2),
+        "accel_buy":  accel_buy,
+        "cvd_diverge": cvd_diverge,
+    }
+
+async def get_oi_delta(symbol: str) -> dict:
+    """
+    Open Interest Delta — replaces Funding Rate
+    Rising OI + price rising = real buyers entering (LONG signal)
+    Falling OI + price rising = short covering only (weaker signal)
+    Rising OI + price falling = real sellers entering (SHORT signal)
+    """
+    oi_list = await get_open_interest(symbol)
+    ticker  = await get_tickers(symbol)
+
+    if not oi_list or len(oi_list) < 2:
+        return {"oi_signal": "neutral", "oi_delta_pct": 0.0}
+
+    try:
+        oi_now  = float(oi_list[0]["openInterest"])
+        oi_prev = float(oi_list[-1]["openInterest"])
+        oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100 if oi_prev > 0 else 0
+
+        price_now  = float(ticker.get("lastPrice", 0))
+        price_mark = float(ticker.get("markPrice", price_now))
+
+        # OI rising = new money entering
+        oi_rising = oi_delta_pct > 0.3    # >0.3% increase
+        oi_falling = oi_delta_pct < -0.3  # >0.3% decrease
+
+        if oi_rising:
+            oi_signal = "long"    # new longs entering
+        elif oi_falling:
+            oi_signal = "short"   # longs exiting /
+        return {"oi_signal": oi_signal, "oi_delta_pct": round(oi_delta_pct, 3)}
+    except Exception as e:
+        print(f"OI delta error: {e}")
+        return {"oi_signal": "neutral", "oi_delta_pct": 0.0}
+
+def calc_score(direction: str, obi_data: dict, cvd_data: dict, oi_data: dict) -> tuple:
+    """
+    Score = OBI (35) + CVD (35) + OI Delta (20) + all-agree bonus (10)
+    Minimum to trade: 75
+    """
     score = 0
 
-    obi       = details.get("obi", 0.5)
-    buy_ratio = details.get("buy_ratio", 0.5)
-    cvd_delta = details.get("cvd_delta", 0)
-    bid_stack = details.get("bid_stack", False)
-    accel_buy = details.get("accel_buy", False)
-    cvd_div   = details.get("cvd_diverge", False)
-    whale     = details.get("whale", False)
-    whale_dir = details.get("whale_dir", "neutral")
-    whale_rec = details.get("whale_recent", False)
-    fund_sig  = details.get("fund_signal", "neutral")
-    long_votes = details.get("long_votes", 0)
-    short_votes = details.get("short_votes", 0)
-    votes     = long_votes if direction == "long" else short_votes
+    obi        = obi_data.get("obi", 0.5)
+    bid_stack  = obi_data.get("bid_stack", False)
+    buy_ratio  = cvd_data.get("buy_ratio", 0.5)
+    accel_buy  = cvd_data.get("accel_buy", False)
+    cvd_diverge = cvd_data.get("cvd_diverge", False)
+    oi_signal  = oi_data.get("oi_signal", "neutral")
 
-    # OBI (0-25 pts)
-    obi_dist  = (max(0, obi - 0.5) * 2 if direction == "long"
-                 else max(0, 0.5 - obi) * 2)
-    score += min(obi_dist * 25, 25)
-    if bid_stack and direction == "long":  score += 3
-    if bid_stack and direction == "short": score -= 3
+    # ① OBI — 35 pts
+    if direction == "long":
+        obi_dist = max(0, obi - 0.5) * 2
+    else:
+        obi_dist = max(0, 0.5 - obi) * 2
+    score += min(obi_dist * 35, 35)
+    if bid_stack and direction == "long":  score += 5
+    if bid_stack and direction == "short": score -= 5
 
-    # Flow (0-25 pts)
-    flow_dist = (max(0, buy_ratio - 0.5) * 2 if direction == "long"
-                 else max(0, 0.5 - buy_ratio) * 2)
-    score += min(flow_dist * 25, 25)
-    if accel_buy and direction == "long":  score += 3
+    # ② CVD — 35 pts
+    if direction == "long":
+        flow_dist = max(0, buy_ratio - 0.5) * 2
+    else:
+        flow_dist = max(0, 0.5 - buy_ratio) * 2
+    score += min(flow_dist * 35, 35)
+    if accel_buy and direction == "long": score += 5
 
-    # CVD (0-20 pts) -- weighted highest of the 3 gate signals
-    cvd_abs   = abs(cvd_delta)
-    cvd_score = min(cvd_abs / 100.0 * 20, 20)  # scales with delta size
-    if direction == "long"  and cvd_delta > 0: score += cvd_score
-    if direction == "short" and cvd_delta < 0: score += cvd_score
-    if cvd_div: score += 5  # divergence bonus -- fake move detected
+    # CVD divergence penalty — fake move detected
+    if cvd_diverge: score -= 10
 
-    # Whale booster (+15, +5 recency)
-    if whale and whale_dir == direction:
-        score += 15
-        if whale_rec: score += 5
+    # ③ OI Delta — 20 pts (replaces funding rate)
+    if oi_signal == direction:   score += 20
+    elif oi_signal == "neutral": score += 5
 
-    # Funding booster (+10)
-    if fund_sig == direction: score += 10
-    elif fund_sig == "neutral": score += 2
-
-    # All 3 gate agree bonus (+10)
+    # All 3 agree bonus — +10 pts
+    obi_vote = "long" if obi >= 0.6 else ("short" if obi <= 0.4 else "neutral")
+    cvd_vote = "long" if buy_ratio >= 0.6 else ("short" if buy_ratio <= 0.4 else "neutral")
+    oi_vote  = oi_signal
+    votes    = sum(1 for v in [obi_vote, cvd_vote, oi_vote] if v == direction)
     if votes == 3: score += 10
 
     score = max(0, min(100, int(score)))
 
     if   score >= 80: label = "VERY STRONG"
-    elif score >= 65: label = "STRONG"
+    elif score >= 75: label = "STRONG"
     elif score >= 40: label = "MEDIUM"
     else:             label = "WEAK"
 
-    return score, label
+    return score, label, votes
 
-# ============================================================
-#  DYNAMIC TP/SL -- score driven
-#  WEAK:        TP1 +3%  TP2 +7%  TP3 +12%  SL -2%
-#  MEDIUM:      TP1 +5%  TP2 +12% TP3 +20%  SL -3%
-#  STRONG:      TP1 +7%  TP2 +18% TP3 +30%  SL -3.5%
-#  VERY STRONG: TP1 +10% TP2 +25% TP3 +40%  SL -4%
-# ============================================================
-def get_dynamic_tp_sl(score, entry, signal):
-    if   score >= 80:
-        tp1_pct,tp2_pct,tp3_pct,sl_pct = 10.0,25.0,40.0,4.0
-        label = "VERY STRONG"
-    elif score >= 65:
-        tp1_pct,tp2_pct,tp3_pct,sl_pct = 7.0,18.0,30.0,3.5
-        label = "STRONG"
-    elif score >= 40:
-        tp1_pct,tp2_pct,tp3_pct,sl_pct = 5.0,12.0,20.0,3.0
-        label = "MEDIUM"
-    else:
-        tp1_pct,tp2_pct,tp3_pct,sl_pct = 3.0,7.0,12.0,2.0
-        label = "WEAK"
-    if signal == "long":
-        tp1 = round(entry * (1 + tp1_pct / 100), 6)
-        tp2 = round(entry * (1 + tp2_pct / 100), 6)
-        tp3 = round(entry * (1 + tp3_pct / 100), 6)
-        sl  = round(entry * (1 - sl_pct  / 100), 6)
-    else:
-        tp1 = round(entry * (1 - tp1_pct / 100), 6)
-        tp2 = round(entry * (1 - tp2_pct / 100), 6)
-        tp3 = round(entry * (1 - tp3_pct / 100), 6)
-        sl  = round(entry * (1 + sl_pct  / 100), 6)
+# ═══════════════════════════════════════════════════════════════
+#  TP / SL / POSITION SIZING
+# ═══════════════════════════════════════════════════════════════
+
+def get_tp_sl(score: int, entry: float, direction: str) -> dict:
+    """
+    Score-driven TP/SL targets.
+    STRONG  75-79: TP1 +7%  TP2 +18%  TP3 +30%  SL -3.5%
+    V.STRONG 80+:  TP1 +10% TP2 +25%  TP3 +40%  SL -4%
+    """
+    if score >= 80:
+        tp1_pct, tp2_pct, tp3_pct, sl_pct = 10.0, 25.0, 40.0, 4.0
+    else:  # 75-79 STRONG
+        tp1_pct, tp2_pct, tp3_pct, sl_pct = 7.0, 18.0, 30.0, 3.5
+
+    m = 1 if direction == "long" else -1
     return {
-        "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
+        "tp1": round(entry * (1 + m * tp1_pct / 100), 6),
+        "tp2": round(entry * (1 + m * tp2_pct / 100), 6),
+        "tp3": round(entry * (1 + m * tp3_pct / 100), 6),
+        "sl":  round(entry * (1 - m * sl_pct  / 100), 6),
         "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
-        "tp3_pct": tp3_pct, "sl_pct":  sl_pct,
-        "label":   label,
+        "tp3_pct": tp3_pct, "sl_pct": sl_pct,
     }
 
-# ============================================================
-#  DYNAMIC POSITION SIZE -- score driven, leverage fixed 2x
-#  WEAK:        10% of balance (floor $10)
-#  MEDIUM:      15% of balance (floor $15)
-#  STRONG:      20% of balance (floor $20)
-#  VERY STRONG: 25% of balance (floor $25)
-#  Hard cap:    30% of balance
-# ============================================================
-def get_dynamic_position_size(score, balance):
+def get_position_size(score: int, balance: float) -> float:
+    """Score-driven sizing. Hard cap 30% of balance."""
     if   score >= 80: pct = 25.0
-    elif score >= 65: pct = 20.0
-    elif score >= 40: pct = 15.0
-    else:             pct = 10.0
-    size  = balance * pct / 100
-    floor = max(10.0, pct * 0.4)
-    cap   = balance * 0.30
-    return round(min(max(size, floor), cap), 2)
+    else:             pct = 20.0   # 75-79
+    size = balance * pct / 100
+    return min(size, balance * 0.30)
 
-# ============================================================
-#  MARKET CONTEXT FILTERS -- OI + Liquidations
-#  Still active as final gate after signal fires
-# ============================================================
-async def get_oi_trend(symbol):
-    try:
-        d = await by_get("/v5/market/open-interest", {
-            "category":    "linear",
-            "symbol":      symbol,
-            "intervalTime":"5min",
-            "limit":       10,
-        })
-        items = d.get("result", {}).get("list", [])
-        if len(items) < 4: return "neutral"
-        recent = float(items[0].get("openInterest", 0))
-        older  = float(items[-1].get("openInterest", 0))
-        if older == 0: return "neutral"
-        chg = (recent - older) / older * 100
-        if chg >  1: return "rising"
-        if chg < -1: return "falling"
-        return "neutral"
-    except: return "neutral"
+# ═══════════════════════════════════════════════════════════════
+#  LAYER 3 — MOMENTUM EXHAUSTION EXIT
+#  Jasleen's eye coded: shrinking candles + CVD flattening
+# ═══════════════════════════════════════════════════════════════
 
-async def get_liquidation_bias(symbol):
-    try:
-        d = await by_get("/v5/market/liquidation", {
-            "category": "linear",
-            "symbol":   symbol,
-            "limit":    50,
-        })
-        items = d.get("result", {}).get("list", [])
-        if not items: return "neutral"
-        lv = sum(float(i.get("size", 0)) * float(i.get("price", 0))
-                 for i in items if i.get("side") == "Buy")
-        sv = sum(float(i.get("size", 0)) * float(i.get("price", 0))
-                 for i in items if i.get("side") == "Sell")
-        t  = lv + sv
-        if t == 0: return "neutral"
-        if lv / t * 100 > 70: return "longs_liq"
-        if sv / t * 100 > 70: return "shorts_liq"
-        return "neutral"
-    except: return "neutral"
+async def check_momentum_exhaustion(symbol: str, direction: str, entry: float, current_price: float) -> bool:
+    """
+    Returns True if momentum is dying and we should exit early.
+    Only triggers if already >2% in profit.
 
-async def get_market_context(symbol):
-    oi, liq = "neutral", "neutral"
-    try:
-        r = await asyncio.gather(
-            get_oi_trend(symbol),
-            get_liquidation_bias(symbol),
-            return_exceptions=True)
-        if not isinstance(r[0], Exception): oi  = r[0]
-        if not isinstance(r[1], Exception): liq = r[1]
-    except: pass
-    return {"oi_trend": oi, "liq_bias": liq}
+    Conditions (all must be true):
+    1. Already > 2% profit
+    2. Last 3 candle bodies are shrinking
+    3. Current body < 40% of 10-candle average body size
+    4. CVD slope is flattening or reversing
+    """
+    # Gate: only if >2% in profit
+    if direction == "long":
+        profit_pct = (current_price - entry) / entry * 100
+    else:
+        profit_pct = (entry - current_price) / entry * 100
 
-def market_context_allows(signal, ctx):
-    oi  = ctx.get("oi_trend", "neutral")
-    liq = ctx.get("liq_bias",  "neutral")
-    if signal == "long":
-        if oi == "falling" and liq != "shorts_liq":
-            return False, "OI falling - weak rally"
-        if liq == "shorts_liq":
-            return True, "shorts_liq - strong bullish"
-        return True, f"OI={oi}"
-    if signal == "short":
-        if oi == "falling" and liq != "longs_liq":
-            return False, "OI falling - weak drop"
-        if liq == "longs_liq":
-            return True, "longs_liq - strong bearish"
-        return True, f"OI={oi}"
-    return True, "ok"
+    if profit_pct < 2.0:
+        return False
 
-# ============================================================
-#  SCANNER
-# ============================================================
-async def scan_once():
-    if state["daily_loss_hit"]: return
-    try:
-        all_syms = await fetch_all_symbols()
-        if all_syms:
-            TOP50.clear()
-            TOP50.extend(all_syms)
-        sample = random.sample(TOP50, min(20, len(TOP50)))
-        state["stats"]["scanned"] = len(TOP50)
-        print(f"Scan: {len(sample)} of {len(TOP50)} | "
-              f"positions={len(state['positions'])}")
-        for sym in sample:
-            if sym in state["positions"]: continue
-            if any(p["symbol"] == sym for p in state["pending"]): continue
-            await analyse(sym)
-            await asyncio.sleep(0.3)
-        for sig in list(state["pending"]):
-            if len(state["positions"]) >= state["max_pos"]: break
-            if sig["symbol"] in state["positions"]:
-                state["pending"] = [s for s in state["pending"]
-                                    if s["symbol"] != sig["symbol"]]
-                continue
-            try:
-                score = sig.get("score", 50)
-                usdt  = max(
-                    get_dynamic_position_size(score, state["balance"]),
-                    MIN_ORDER)
-                await execute_trade(sig["symbol"], sig["direction"],
-                                    usdt, sig)
-                state["pending"] = [s for s in state["pending"]
-                                    if s["symbol"] != sig["symbol"]]
-            except Exception as e:
-                print(f"Trade failed {sig['symbol']}: {e}")
-                state["pending"] = [s for s in state["pending"]
-                                    if s["symbol"] != sig["symbol"]]
-    except Exception as e:
-        print(f"Scanner error: {e}")
+    # Fetch recent 5m candles
+    candles = await get_klines(symbol, interval="5", limit=15)
+    if len(candles) < 10:
+        return False
 
-async def analyse(symbol):
-    try:
-        if symbol in state["positions"]: return
-        if any(p["symbol"] == symbol for p in state["pending"]): return
+    # Body sizes (absolute)
+    def body(c): return abs(float(c[4]) - float(c[1]))
 
-        direction, details = await master_signal(symbol)
+    bodies = [body(c) for c in candles]
 
-        log = {
-            "symbol":    symbol,
-            "signal":    direction,
-            "obi":       details.get("obi", 0.5),
-            "buy_ratio": details.get("buy_ratio", 0.5),
-            "cvd":       details.get("cvd_delta", 0),
-            "whale":     details.get("whale", False),
-            "funding":   details.get("funding_rate", 0),
-            "ts":        int(time.time()),
-        }
-        state["signal_log"] = ([log] + state["signal_log"])[:30]
+    # Check last 3 bodies are shrinking
+    last3  = bodies[-3:]
+    shrinking = last3[0] > last3[1] > last3[2]
 
-        if direction not in ("long", "short"): return
-        if symbol in state["positions"]: return
-        if any(p["symbol"] == symbol for p in state["pending"]): return
+    # Current body vs 10-candle average
+    avg_body = sum(bodies[-10:]) / 10
+    tiny_body = bodies[-1] < avg_body * 0.40 if avg_body > 0 else False
 
-        ctx = await get_market_context(symbol)
-        allowed, reason = market_context_allows(direction, ctx)
-        if not allowed:
-            print(f"MARKET BLOCK {symbol} [{direction}]: {reason}")
-            return
+    # CVD slope check — is buying pressure dying?
+    cvd = await get_cvd(symbol)
+    buy_ratio   = cvd.get("buy_ratio", 0.5)
+    accel_buy   = cvd.get("accel_buy", False)
 
-        score, label = score_signal(direction, details)
-        min_score = state.get("min_score", 45)
-        if score < min_score:
-            print(f"SCORE LOW {symbol}: {score}/100 < {min_score} ({state.get("signal_mode","medium")}) - skip")
-            return
+    if direction == "long":
+        # For longs: CVD flattening = buy_ratio dropping toward neutral
+        cvd_dying = buy_ratio < 0.55 and not accel_buy
+    else:
+        # For shorts: selling pressure dying
+        cvd_dying = buy_ratio > 0.45 and not accel_buy
 
-        price = await get_price(symbol)
-        if price <= 0: return
+    result = shrinking and tiny_body and cvd_dying
 
-        tp_sl    = get_dynamic_tp_sl(score, price, direction)
-        est_size = get_dynamic_position_size(score, state["balance"])
+    if result:
+        print(f"⚡ Momentum exhaustion detected on {symbol} | "
+              f"profit={profit_pct:.1f}% | bodies={[round(b,4) for b in last3]} | "
+              f"avg_body={avg_body:.4f} | buy_ratio={buy_ratio:.3f}")
 
-        whale_tag = (f" WHALE {details.get('whale_ratio',0):.1f}x"
-                     if details.get("whale") else "")
-        cvd_tag   = (" CVD-DIV" if details.get("cvd_diverge") else "")
+    return result
 
-        state["pending"].append({
-            "symbol":    symbol,
-            "direction": direction,
-            "price":     price,
-            "tp1":       tp_sl["tp1"],
-            "tp2":       tp_sl["tp2"],
-            "tp3":       tp_sl["tp3"],
-            "sl":        tp_sl["sl"],
-            "tp1_pct":   tp_sl["tp1_pct"],
-            "tp2_pct":   tp_sl["tp2_pct"],
-            "tp3_pct":   tp_sl["tp3_pct"],
-            "sl_pct":    tp_sl["sl_pct"],
-            "score":     score,
-            "label":     label,
-            "est_size":  est_size,
-            "obi":       details.get("obi", 0.5),
-            "buy_ratio": details.get("buy_ratio", 0.5),
-            "cvd_delta": details.get("cvd_delta", 0),
-            "whale":     details.get("whale", False),
-            "funding":   details.get("funding_rate", 0),
-            "oi":        ctx.get("oi_trend", "neutral"),
-            "liq":       ctx.get("liq_bias",  "neutral"),
-            "mode":      "lead",
-            "ts":        int(time.time()),
-        })
-        state["stats"]["signals"] += 1
+# ═══════════════════════════════════════════════════════════════
+#  CVD STRUCTURE BREAK EXIT
+# ═══════════════════════════════════════════════════════════════
 
-        print(
-            f"SIGNAL [{label} {score}/100]{whale_tag}{cvd_tag} "
-            f"{direction.upper()} {symbol} @ ${price} "
-            f"size=${est_size:.0f} | "
-            f"OBI={details.get('obi',0.5):.3f} "
-            f"flow={details.get('buy_ratio',0.5):.3f} "
-            f"CVD={details.get('cvd_delta',0):.1f} "
-            f"TP1=+{tp_sl['tp1_pct']}% "
-            f"TP2=+{tp_sl['tp2_pct']}% "
-            f"TP3=+{tp_sl['tp3_pct']}% "
-            f"SL=-{tp_sl['sl_pct']}%"
-        )
-    except Exception as e:
-        print(f"Analyse {symbol}: {e}")
+async def check_structure_break(symbol: str, direction: str, entry: float, current_price: float) -> bool:
+    """
+    Hard exit if CVD divergence confirms reversal.
+    Only triggers if already >1% in profit (don't exit too early).
+    """
+    if direction == "long":
+        profit_pct = (current_price - entry) / entry * 100
+    else:
+        profit_pct = (entry - current_price) / entry * 100
 
-# ============================================================
-#  TRADE EXECUTION
-# ============================================================
-async def execute_trade(symbol, direction, usdt_amount, sig=None):
-    if symbol in state["positions"]:
-        raise Exception("Already in position")
-    await set_leverage(symbol)
-    await asyncio.sleep(0.3)
-    price = await get_price(symbol)
-    if price <= 0: raise Exception("Cannot get price")
-    qty = round((usdt_amount * state["leverage"]) / price, 3)
-    if qty <= 0: raise Exception("Qty too small")
-    side  = "Buy" if direction == "long" else "Sell"
-    score = sig.get("score", 50) if sig else 50
-    tp_sl = get_dynamic_tp_sl(score, price, direction)
-    await place_futures_order(symbol, side, qty, sl=tp_sl["sl"])
-    if direction == "long": state["stats"]["long"]  += 1
-    else:                   state["stats"]["short"] += 1
-    state["stats"]["traded"] += 1
-    print(
-        f"TRADE OPEN [{tp_sl['label']} {score}/100] "
-        f"{direction.upper()} {symbol} qty={qty} @ ${price} "
-        f"TP1=+{tp_sl['tp1_pct']}% TP2=+{tp_sl['tp2_pct']}% "
-        f"TP3=+{tp_sl['tp3_pct']}% SL=-{tp_sl['sl_pct']}%"
-    )
-    state["positions"][symbol] = {
-        "symbol":      symbol,
-        "direction":   direction,
-        "entry":       price,
-        "current":     price,
-        "qty":         qty,
-        "qty_remaining": qty,
-        "usdt_size":   usdt_amount,
-        "tp1":         tp_sl["tp1"],
-        "tp2":         tp_sl["tp2"],
-        "tp3":         tp_sl["tp3"],
-        "sl":          tp_sl["sl"],
-        "tp1_pct":     tp_sl["tp1_pct"],
-        "tp2_pct":     tp_sl["tp2_pct"],
-        "tp3_pct":     tp_sl["tp3_pct"],
-        "sl_pct":      tp_sl["sl_pct"],
-        "score":       score,
-        "label":       tp_sl["label"],
-        "highest":     price,
-        "lowest":      price,
-        "tp1_hit":     False,
-        "tp2_hit":     False,
-        "pnl":         0.0,
-        "pnl_pct":     0.0,
-        "mode":        "lead",
-        "leverage":    state["leverage"],
-        "entry_ts":    int(time.time()),
+    if profit_pct < 1.0:
+        return False
+
+    cvd = await get_cvd(symbol)
+    diverge = cvd.get("cvd_diverge", False)
+    buy_ratio = cvd.get("buy_ratio", 0.5)
+
+    if direction == "long" and diverge and buy_ratio < 0.45:
+        print(f"🔴 Structure break on {symbol} LONG | CVD diverged + buy_ratio={buy_ratio:.3f}")
+        return True
+    if direction == "short" and diverge and buy_ratio > 0.55:
+        print(f"🔴 Structure break on {symbol} SHORT | CVD diverged + buy_ratio={buy_ratio:.3f}")
+        return True
+
+    return False
+
+# ═══════════════════════════════════════════════════════════════
+#  MAIN SIGNAL ENGINE
+# ═══════════════════════════════════════════════════════════════
+
+WATCHLIST = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "MATICUSDT",
+    "ADAUSDT", "LTCUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
+]
+
+async def scan_symbol(symbol: str) -> dict | None:
+    """
+    Full 3-layer analysis on one symbol.
+    Returns signal dict if all layers pass, None otherwise.
+    """
+    ticker = await get_tickers(symbol)
+    if not ticker:
+        return None
+
+    price = float(ticker.get("lastPrice", 0))
+    if price <= 0:
+        return None
+
+    # Quick pre-filter: check OBI to determine candidate direction
+    obi_data = await get_obi(symbol)
+    obi = obi_data.get("obi", 0.5)
+
+    # INVERTED — OBI shows heavy bids = smart money selling into demand
+    if obi > 0.58:
+        direction = "short"  # inverted
+    elif obi < 0.42:
+        direction = "long"   # inverted
+    else:
+        return None  # too neutral, skip
+
+    # ── Layer 1: Trend Gate ──
+    trend_ok, trend_details = await check_trend_gate(symbol, direction)
+    if not trend_ok:
+        state["trend_blocks"] += 1
+        print(f"🚫 {symbol} {direction.upper()} BLOCKED by trend gate: {trend_details.get('reason','')}")
+        return None
+
+    # ── Layer 2: Score ──
+    cvd_data = await get_cvd(symbol)
+    oi_data  = await get_oi_delta(symbol)
+    score, label, votes = calc_score(direction, obi_data, cvd_data, oi_data)
+
+    if score < MIN_SCORE:
+        state["score_blocks"] += 1
+        print(f"📊 {symbol} score={score} < {MIN_SCORE} — skipped")
+        return None
+
+    # ── All layers passed ──
+    tp_sl = get_tp_sl(score, price, direction)
+
+    print(f"✅ SIGNAL: {symbol} {direction.upper()} | score={score} {label} | "
+          f"OBI={obi:.3f} CVD={cvd_data['buy_ratio']:.3f} OI={oi_data['oi_signal']} | "
+          f"ADX={trend_details['adx']} UTBot={trend_details['ut_bot']}")
+
+    return {
+        "symbol": symbol, "direction": direction,
+        "price": price, "score": score, "label": label,
+        "votes": votes, "tp_sl": tp_sl,
+        "obi": obi_data, "cvd": cvd_data, "oi": oi_data,
+        "trend": trend_details,
+        "timestamp": int(time.time()),
     }
-    state["balance"] = await get_balance()
 
-# ============================================================
-#  POSITION MONITOR -- every 5 seconds
-#  TP1 -> close 40% | TP2 -> close 40% | TP3 -> close 20%
-#  Trailing SL updated live on Bybit
-# ============================================================
-async def monitor_positions():
-    while True:
-        if (state["bot_on"] and state["api_key"]
-                and state["positions"]):
-            for sym in list(state["positions"]):
-                try:
-                    pos       = state["positions"][sym]
-                    price     = await get_price(sym)
-                    if price <= 0: continue
-                    pos["current"] = price
-                    orig_qty  = pos["qty"]
-                    qty_rem   = pos.get("qty_remaining", orig_qty)
-                    direction = pos["direction"]
+# ═══════════════════════════════════════════════════════════════
+#  POSITION MONITOR — runs every 5 seconds when in trade
+# ═══════════════════════════════════════════════════════════════
 
-                    if direction == "long":
-                        pos["pnl"] = (price - pos["entry"]) * qty_rem
-                        pos["pnl_pct"] = ((price - pos["entry"]) /
-                                          pos["entry"] * 100 *
-                                          pos["leverage"])
-                        # Trailing SL
-                        if price > pos["highest"]:
-                            pos["highest"] = price
-                            new_sl = round(
-                                price * (1 - state["trail_pct"] / 100), 6)
-                            if new_sl > pos["sl"]:
-                                pos["sl"] = new_sl
-                                try:
-                                    await by_post(
-                                        "/v5/position/trading-stop", {
-                                            "category":    "linear",
-                                            "symbol":      sym,
-                                            "stopLoss":    str(new_sl),
-                                            "slTriggerBy": "LastPrice",
-                                            "positionIdx": 0,
-                                        })
-                                    print(f"Trail SL up {sym} SL={new_sl}")
-                                except: pass
-                        # TP1 -> close 40%
-                        if not pos["tp1_hit"] and price >= pos["tp1"]:
-                            pos["tp1_hit"] = True
-                            cq = round(orig_qty * 0.4, 3)
-                            if cq > 0:
-                                pos["qty_remaining"] = round(qty_rem - cq, 3)
-                                ppnl = ((price - pos["entry"]) *
-                                        cq * pos["leverage"])
-                                state["today_pnl"] += ppnl
-                                state["total_pnl"] += ppnl
-                                await close_futures_position(sym, "long", cq)
-                                print(f"TP1 LONG {sym} @{price} "
-                                      f"closed 40% pnl=${ppnl:.2f}")
-                        # TP2 -> close 40%
-                        elif (pos["tp1_hit"] and not pos["tp2_hit"]
-                              and price >= pos["tp2"]):
-                            pos["tp2_hit"] = True
-                            cq = min(round(orig_qty * 0.4, 3),
-                                     pos["qty_remaining"])
-                            if cq > 0:
-                                pos["qty_remaining"] = round(
-                                    pos["qty_remaining"] - cq, 3)
-                                ppnl = ((price - pos["entry"]) *
-                                        cq * pos["leverage"])
-                                state["today_pnl"] += ppnl
-                                state["total_pnl"] += ppnl
-                                await close_futures_position(sym, "long", cq)
-                                print(f"TP2 LONG {sym} @{price} "
-                                      f"closed 40% pnl=${ppnl:.2f}")
-                        # TP3 -> close final 20%
-                        elif (pos["tp1_hit"] and pos["tp2_hit"]
-                              and price >= pos["tp3"]):
-                            print(f"TP3 LONG {sym} @{price} final 20%")
-                            await close_position_and_record(sym, "win")
-                            continue
-                        # SL backup
-                        if sym in state["positions"] and price <= pos["sl"]:
-                            print(f"SL LONG {sym} @{price}")
-                            await close_position_and_record(sym, "loss")
-                            continue
+async def monitor_position():
+    """
+    Watches open position for:
+    - TP1/TP2/TP3 hits
+    - Momentum exhaustion exit
+    - CVD structure break exit
+    - Breakeven SL after TP1
+    """
+    pos = state.get("position")
+    if not pos:
+        return
 
-                    else:  # SHORT
-                        pos["pnl"] = (pos["entry"] - price) * qty_rem
-                        pos["pnl_pct"] = ((pos["entry"] - price) /
-                                          pos["entry"] * 100 *
-                                          pos["leverage"])
-                        # Trailing SL
-                        if price < pos["lowest"]:
-                            pos["lowest"] = price
-                            new_sl = round(
-                                price * (1 + state["trail_pct"] / 100), 6)
-                            if new_sl < pos["sl"]:
-                                pos["sl"] = new_sl
-                                try:
-                                    await by_post(
-                                        "/v5/position/trading-stop", {
-                                            "category":    "linear",
-                                            "symbol":      sym,
-                                            "stopLoss":    str(new_sl),
-                                            "slTriggerBy": "LastPrice",
-                                            "positionIdx": 0,
-                                        })
-                                    print(f"Trail SL down {sym} SL={new_sl}")
-                                except: pass
-                        # TP1 -> close 40%
-                        if not pos["tp1_hit"] and price <= pos["tp1"]:
-                            pos["tp1_hit"] = True
-                            cq = round(orig_qty * 0.4, 3)
-                            if cq > 0:
-                                pos["qty_remaining"] = round(qty_rem - cq, 3)
-                                ppnl = ((pos["entry"] - price) *
-                                        cq * pos["leverage"])
-                                state["today_pnl"] += ppnl
-                                state["total_pnl"] += ppnl
-                                await close_futures_position(sym, "short", cq)
-                                print(f"TP1 SHORT {sym} @{price} "
-                                      f"closed 40% pnl=${ppnl:.2f}")
-                        # TP2 -> close 40%
-                        elif (pos["tp1_hit"] and not pos["tp2_hit"]
-                              and price <= pos["tp2"]):
-                            pos["tp2_hit"] = True
-                            cq = min(round(orig_qty * 0.4, 3),
-                                     pos["qty_remaining"])
-                            if cq > 0:
-                                pos["qty_remaining"] = round(
-                                    pos["qty_remaining"] - cq, 3)
-                                ppnl = ((pos["entry"] - price) *
-                                        cq * pos["leverage"])
-                                state["today_pnl"] += ppnl
-                                state["total_pnl"] += ppnl
-                                await close_futures_position(sym, "short", cq)
-                                print(f"TP2 SHORT {sym} @{price} "
-                                      f"closed 40% pnl=${ppnl:.2f}")
-                        # TP3 -> close final 20%
-                        elif (pos["tp1_hit"] and pos["tp2_hit"]
-                              and price <= pos["tp3"]):
-                            print(f"TP3 SHORT {sym} @{price} final 20%")
-                            await close_position_and_record(sym, "win")
-                            continue
-                        # SL backup
-                        if sym in state["positions"] and price >= pos["sl"]:
-                            print(f"SL SHORT {sym} @{price}")
-                            await close_position_and_record(sym, "loss")
-                            continue
+    symbol    = pos["symbol"]
+    direction = pos["direction"]
+    entry     = pos["entry"]
+    tp_sl     = pos["tp_sl"]
+    qty       = pos["qty"]
+    tp1_hit   = pos.get("tp1_hit", False)
+    tp2_hit   = pos.get("tp2_hit", False)
 
-                except Exception as e:
-                    print(f"Monitor {sym}: {e}")
+    ticker = await get_tickers(symbol)
+    if not ticker:
+        return
 
-        check_daily_loss()
-        await asyncio.sleep(5)
+    price = float(ticker.get("lastPrice", 0))
+    if price <= 0:
+        return
 
-async def close_position_and_record(symbol, result):
-    pos = state["positions"].get(symbol)
-    if not pos: return
+    pos["current_price"] = price
+
+    # P&L calculation
+    if direction == "long":
+        unrealized_pct = (price - entry) / entry * 100
+    else:
+        unrealized_pct = (entry - price) / entry * 100
+    pos["unrealized_pct"] = round(unrealized_pct, 2)
+
+    tp1 = tp_sl["tp1"]; tp2 = tp_sl["tp2"]; tp3 = tp_sl["tp3"]
+
+    # ── TP3 hit — full close ──
+    if not tp2_hit and ((direction == "long" and price >= tp3) or
+                        (direction == "short" and price <= tp3)):
+        print(f"🎯 TP3 hit {symbol} @ {price}")
+        await close_position(symbol, qty * 0.20, direction)
+        await record_close(symbol, price, "win", "TP3")
+        return
+
+    # ── TP2 hit — close 40% more ──
+    if not tp2_hit and ((direction == "long" and price >= tp2) or
+                        (direction == "short" and price <= tp2)):
+        print(f"🎯 TP2 hit {symbol} @ {price}")
+        await close_position(symbol, qty * 0.40, direction)
+        pos["tp2_hit"] = True
+        pos["qty"] = qty * 0.20  # only 20% remaining
+
+    # ── TP1 hit — close 40% + move SL to breakeven ──
+    if not tp1_hit and ((direction == "long" and price >= tp1) or
+                        (direction == "short" and price <= tp1)):
+        print(f"🎯 TP1 hit {symbol} @ {price} — moving SL to breakeven")
+        await close_position(symbol, qty * 0.40, direction)
+        pos["tp1_hit"] = True
+        pos["qty"] = qty * 0.60  # 60% remaining
+
+        # Move SL to breakeven + 0.1% buffer
+        be_sl = entry * 1.001 if direction == "long" else entry * 0.999
+        pos["tp_sl"]["sl"] = round(be_sl, 6)
+        await set_sl(symbol, be_sl, direction)
+        print(f"🔒 SL moved to breakeven {be_sl:.4f}")
+        return
+
+    # ── Momentum exhaustion exit ──
+    if await check_momentum_exhaustion(symbol, direction, entry, price):
+        print(f"⚡ Momentum exit {symbol} @ {price}")
+        await close_position(symbol, pos["qty"], direction)
+        await record_close(symbol, price, "win", "momentum_exit")
+        return
+
+    # ── CVD structure break exit ──
+    if await check_structure_break(symbol, direction, entry, price):
+        print(f"🔴 Structure break exit {symbol} @ {price}")
+        await close_position(symbol, pos["qty"], direction)
+        await record_close(symbol, price, "win", "structure_break")
+        return
+
+async def record_close(symbol: str, exit_price: float, result: str, reason: str):
+    """Record trade close to state + Supabase"""
+    pos = state.get("position")
+    if not pos:
+        return
+
+    entry = pos["entry"]
+    direction = pos["direction"]
+    size  = pos.get("size_usdt", 0)
+
+    if direction == "long":
+        pnl = (exit_price - entry) / entry * size * LEVERAGE
+    else:
+        pnl = (entry - exit_price) / entry * size * LEVERAGE
+
+    pnl = round(pnl, 4)
+
+    trade = {
+        "symbol": symbol, "direction": direction,
+        "result": result, "entry": entry,
+        "exit_price": exit_price, "pnl": pnl,
+        "score": pos.get("score", 0),
+        "label": pos.get("label", ""),
+        "reason": reason,
+        "tp1_hit": pos.get("tp1_hit", False),
+        "tp2_hit": pos.get("tp2_hit", False),
+        "timestamp": int(time.time()),
+    }
+
+    state["trades"].insert(0, trade)
+    state["trades"] = state["trades"][:100]
+    state["total_pnl"] = round(state["total_pnl"] + pnl, 4)
+
+    if result == "win":
+        state["wins"] += 1
+    else:
+        state["losses"] += 1
+
+    state["position"] = None
+    print(f"{'✅ WIN' if result=='win' else '❌ LOSS'} {symbol} | PnL={pnl:+.4f} | reason={reason}")
+
+    # Save to Supabase
+    await save_to_supabase(trade)
+
+async def save_to_supabase(trade: dict):
+    if not SB_URL or not SB_KEY:
+        return
     try:
-        qty_rem    = pos.get("qty_remaining", pos["qty"])
-        await close_futures_position(symbol, pos["direction"], qty_rem)
-        await cancel_all_orders(symbol)
-        pnl        = pos["pnl"]
-        exit_price = pos.get("current", pos.get("entry", 0))
-        state["today_pnl"] += pnl
-        state["total_pnl"] += pnl
-        if result == "win": state["wins"]   += 1
-        else:               state["losses"] += 1
-        trade = {**pos, "result": result, "close_ts": int(time.time())}
-        state["trades"].insert(0, trade)
-        del state["positions"][symbol]
-        state["balance"] = await get_balance()
-        print(f"{result.upper()}: {symbol} pnl=${pnl:.2f}")
-        await db_save_trade(trade, result, exit_price)
+        async with httpx.AsyncClient(timeout=8) as c:
+            await c.post(
+                f"{SB_URL}/rest/v1/trades",
+                headers={
+                    "apikey": SB_KEY,
+                    "Authorization": f"Bearer {SB_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                json={
+                    "symbol":     trade["symbol"],
+                    "direction":  trade["direction"],
+                    "result":     trade["result"],
+                    "entry":      trade["entry"],
+                    "exit_price": trade["exit_price"],
+                    "pnl":        trade["pnl"],
+                    "score":      trade["score"],
+                    "label":      trade["label"],
+                    "tp1_hit":    trade["tp1_hit"],
+                    "tp2_hit":    trade["tp2_hit"],
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
     except Exception as e:
-        print(f"Close error {symbol}: {e}")
+        print(f"Supabase save error: {e}")
 
-def check_daily_loss():
-    if state["start_balance"] <= 0: return
-    loss_pct = ((state["start_balance"] - state["balance"]) /
-                state["start_balance"] * 100)
-    if loss_pct >= state["max_daily_loss"] and not state["daily_loss_hit"]:
-        state["daily_loss_hit"] = True
-        state["bot_on"]         = False
-        print(f"DAILY LOSS LIMIT HIT: {loss_pct:.1f}% - bot paused")
+# ═══════════════════════════════════════════════════════════════
+#  MAIN BOT LOOP
+# ═══════════════════════════════════════════════════════════════
 
-# ============================================================
-#  BOT LOOP
-# ============================================================
 async def bot_loop():
-    print("Bot loop started - OBI + Flow + CVD + Whale + Funding")
+    print("🚀 APEX Pro v2.0 starting...")
+    await asyncio.sleep(3)
+
     while True:
-        if (state["bot_on"] and state["api_key"]
-                and not state["daily_loss_hit"]):
-            await scan_once()
-            try: state["balance"] = await get_balance()
-            except: pass
-        await asyncio.sleep(30)
+        try:
+            state["balance"] = await get_balance()
+            state["last_scan"] = int(time.time())
+
+            # Monitor open position every loop
+            if state.get("position"):
+                await monitor_position()
+                await asyncio.sleep(5)
+                continue
+
+            # Scan for new signals
+            state["status"] = "scanning"
+            print(f"🔍 Scanning {len(WATCHLIST)} symbols | Balance: ${state['balance']:.2f}")
+
+            for symbol in WATCHLIST:
+                if state.get("position"):
+                    break  # stop scanning if we entered a trade
+
+                signal = await scan_symbol(symbol)
+                if not signal:
+                    await asyncio.sleep(1)
+                    continue
+
+                # Enter trade
+                balance = state["balance"]
+                size    = get_position_size(signal["score"], balance)
+                price   = signal["price"]
+                qty     = round((size * LEVERAGE) / price, 3)
+
+                if qty <= 0 or size < 5:
+                    print(f"⚠️ Size too small: ${size:.2f} — skip")
+                    continue
+
+                tp_sl = signal["tp_sl"]
+                resp  = await place_order(symbol, signal["direction"], qty,
+                                          tp_sl["sl"], tp_sl["tp1"])
+
+                if resp and resp.get("retCode") == 0:
+                    state["position"] = {
+                        "symbol":    symbol,
+                        "direction": signal["direction"],
+                        "entry":     price,
+                        "qty":       qty,
+                        "size_usdt": size,
+                        "score":     signal["score"],
+                        "label":     signal["label"],
+                        "tp_sl":     tp_sl,
+                        "tp1_hit":   False,
+                        "tp2_hit":   False,
+                        "opened_at": int(time.time()),
+                    }
+                    state["status"] = "in_trade"
+                    print(f"📈 ENTERED {symbol} {signal['direction'].upper()} | "
+                          f"qty={qty} size=${size:.2f} score={signal['score']}")
+                else:
+                    print(f"⚠️ Order failed: {resp}")
+
+                break  # one trade at a time
+
+            state["status"] = "idle"
+            await asyncio.sleep(SCAN_INTERVAL)
+
+        except Exception as e:
+            print(f"Bot loop error: {e}")
+            state["status"] = "error"
+            await asyncio.sleep(10)
+
+# ═══════════════════════════════════════════════════════════════
+#  API ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/state")
+async def api_state():
+    pos = state.get("position")
+    wins   = state["wins"]
+    losses = state["losses"]
+    total  = wins + losses
+    return JSONResponse({
+        "balance":      round(state["balance"], 2),
+        "total_pnl":    state["total_pnl"],
+        "wins":         wins,
+        "losses":       losses,
+        "win_rate":     round(wins / total * 100, 1) if total > 0 else 0,
+        "trades":       state["trades"][:20],
+        "position":     pos,
+        "status":       state["status"],
+        "last_scan":    state["last_scan"],
+        "trend_blocks": state["trend_blocks"],
+        "score_blocks": state["score_blocks"],
+        "min_score":    MIN_SCORE,
+    })
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    return HTMLResponse(UI_HTML)
 
 @app.on_event("startup")
 async def startup():
-    await db_connect()
-    saved = await db_load_trades(100)
-    if saved:
-        state["trades"] = saved
-        print(f"Loaded {len(saved)} trades from DB")
-    stats = await db_load_stats()
-    if stats:
-        state["wins"]            = stats.get("wins", 0)
-        state["losses"]          = stats.get("losses", 0)
-        state["total_pnl"]       = stats.get("total_pnl", 0.0)
-        state["stats"]["traded"] = stats.get("traded", 0)
-        state["stats"]["long"]   = stats.get("long_count", 0)
-        state["stats"]["short"]  = stats.get("short_count", 0)
-        print(f"Restored: W={state['wins']} L={state['losses']} "
-              f"PnL=${state['total_pnl']:.2f}")
-    print(f"APEX Pro starting - key:{bool(state['api_key'])}")
-    if state["api_key"]:
-        try:
-            state["balance"]       = await get_balance()
-            state["start_balance"] = state["balance"]
-            print(f"Balance: ${state['balance']:.2f}")
-        except Exception as e:
-            print(f"Balance error: {e}")
-    syms = await fetch_all_symbols()
-    if syms:
-        TOP50.clear()
-        TOP50.extend(syms)
-        print(f"Loaded {len(TOP50)} symbols from Bybit")
     asyncio.create_task(bot_loop())
-    asyncio.create_task(monitor_positions())
 
-# ============================================================
-#  API ROUTES
-# ============================================================
-@app.post("/api/connect")
-async def connect(req: Request):
-    b = await req.json()
-    state["api_key"]        = b.get("api_key", "").strip()
-    state["api_secret"]     = b.get("api_secret", "").strip()
-    state["leverage"]       = int(b.get("leverage", 2))
-    state["max_pos"]        = int(b.get("max_pos", 3))
-    state["trail_pct"]      = float(b.get("trail_pct", 10.0))
-    state["max_daily_loss"] = float(b.get("max_daily_loss", 5.0))
-    state["risk_pct"]       = float(b.get("risk_pct", 2.0))
-    state["balance"]        = await get_balance()
-    state["start_balance"]  = state["balance"]
-    state["daily_loss_hit"] = False
-    state["signal_mode"]    = b.get("signal_mode", state.get("signal_mode", "medium"))
-    mode_scores = {"lenient": 30, "medium": 45, "strict": 60}
-    state["min_score"]      = mode_scores.get(state["signal_mode"], 45)
-    state["bot_on"]         = True
-    print(f"Connected - balance: ${state['balance']:.2f} mode={state['signal_mode']} min_score={state['min_score']}")
-    return {"ok": True, "balance": state["balance"]}
+# ═══════════════════════════════════════════════════════════════
+#  DASHBOARD UI
+# ═══════════════════════════════════════════════════════════════
 
-@app.get("/api/status")
-async def get_status():
-    t   = state["wins"] + state["losses"]
-    dlp = 0
-    if state["start_balance"] > 0:
-        dlp = round(
-            (state["start_balance"] - state["balance"]) /
-            state["start_balance"] * 100, 2)
-    return {
-        "balance":        round(state["balance"], 2),
-        "today_pnl":      round(state["today_pnl"], 2),
-        "total_pnl":      round(state["total_pnl"], 2),
-        "bot_on":         state["bot_on"],
-        "signal_mode":    "medium",
-    "min_score":      45,
-        "mode_desc":      {
-            "lenient": "Lenient - more signals, score >= 30",
-            "medium":  "Medium - balanced, score >= 45",
-            "strict":  "Strict - high conviction, score >= 60",
-        }.get(state["signal_mode"], "Medium - balanced, score >= 45"),
-        "min_score":      state.get("min_score", 45),
-        "leverage":       state["leverage"],
-        "trail_pct":      state["trail_pct"],
-        "max_daily_loss": state["max_daily_loss"],
-        "use_mtf":        False,
-        "daily_loss_hit": state["daily_loss_hit"],
-        "daily_loss_pct": dlp,
-        "positions":      [
-            {**p, "score": p.get("score", 0), "label": p.get("label", "--")}
-            for p in state["positions"].values()
-        ],
-        "trades":         state["trades"][:20],
-        "pending":        state["pending"][:3],
-        "stats":          state["stats"],
-        "wins":           state["wins"],
-        "losses":         state["losses"],
-        "win_rate":       round(state["wins"] / t * 100) if t else 0,
-        "signal_log":     state["signal_log"][:10],
-    }
+UI_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>APEX Pro v2</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--card:#14141e;--border:#1e1e2e;--accent:#f0c040;--green:#3dffa0;--red:#ff4d6d;--text:#e8e8f0;--muted:#6b6b80}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;padding:20px 16px 60px;max-width:480px;margin:0 auto}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.logo{font-family:'Space Mono',monospace;font-size:18px;font-weight:700}.logo span{color:var(--accent)}
+.badge{display:flex;align-items:center;gap:6px;background:rgba(61,255,160,.08);border:1px solid rgba(61,255,160,.2);border-radius:20px;padding:4px 12px;font-size:11px;font-family:'Space Mono',monospace;color:var(--green)}
+.dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+.card-lbl{font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}
+.card-val{font-family:'Space Mono',monospace;font-size:22px;font-weight:700}
+.card-sub{font-size:11px;color:var(--muted);margin-top:3px}
+.green{color:var(--green)}.red{color:var(--red)}.amber{color:var(--accent)}
+.sec{font-family:'Space Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+.sec::after{content:'';flex:1;height:1px;background:var(--border)}
+.pos-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px}
+.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.pos-sym{font-family:'Space Mono',monospace;font-size:16px;font-weight:700}
+.pos-dir{font-size:11px;font-family:'Space Mono',monospace;padding:3px 10px;border-radius:4px}
+.long-bg{background:rgba(61,255,160,.12);color:var(--green)}
+.short-bg{background:rgba(255,77,109,.12);color:var(--red)}
+.tp-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.tp-chip{font-size:10px;font-family:'Space Mono',monospace;padding:3px 9px;border-radius:12px;background:rgba(255,255,255,.06);color:var(--muted)}
+.tp-chip.hit{background:rgba(61,255,160,.15);color:var(--green)}
+.layers{background:rgba(255,255,255,.03);border-radius:10px;padding:12px;margin-top:10px;font-size:12px}
+.layer-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.layer-row:last-child{border:none}
+.trade-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.trade-sym{font-family:'Space Mono',monospace;font-size:12px;font-weight:700}
+.trade-score{font-size:10px;color:var(--muted);font-family:'Space Mono',monospace}
+.trade-pnl{font-family:'Space Mono',monospace;font-size:13px;font-weight:700}
+.filter-bar{background:rgba(240,192,64,.06);border:1px solid rgba(240,192,64,.2);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#bbb}
+.filter-bar b{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">APEX <span>Pro</span> <span style="font-size:11px;color:var(--muted)">v2.0</span></div>
+  <div class="badge"><span class="dot"></span> LIVE</div>
+</div>
 
-@app.post("/api/bot/toggle")
-async def toggle():
-    state["bot_on"] = not state["bot_on"]
-    if state["bot_on"]: state["daily_loss_hit"] = False
-    return {"bot_on": state["bot_on"]}
+<div class="filter-bar" id="filter-bar">
+  Loading filters...
+</div>
 
-@app.post("/api/mode/{mode}")
-async def set_mode(mode: str):
-    MODE_CONFIG = {
-        "lenient": {"min_score": 30,  "desc": "Lenient - more signals, lower conviction threshold"},
-        "medium":  {"min_score": 45,  "desc": "Medium - balanced (recommended)"},
-        "strict":  {"min_score": 60,  "desc": "Strict - high conviction only, fewer signals"},
-    }
-    cfg = MODE_CONFIG.get(mode, MODE_CONFIG["medium"])
-    state["signal_mode"] = mode
-    state["min_score"]   = cfg["min_score"]
-    state["pending"]     = []  # clear pending signals on mode change
-    print(f"Mode: {mode.upper()} min_score={cfg['min_score']}")
-    return {"ok": True, "mode": mode, "desc": cfg["desc"]}
+<div class="grid2" id="summary"></div>
 
-@app.post("/api/settings")
-async def update_settings(req: Request):
-    b = await req.json()
-    if "leverage"       in b: state["leverage"]       = int(b["leverage"])
-    if "trail_pct"      in b: state["trail_pct"]      = float(b["trail_pct"])
-    if "max_daily_loss" in b: state["max_daily_loss"] = float(b["max_daily_loss"])
-    if "risk_pct"       in b: state["risk_pct"]       = float(b["risk_pct"])
-    if "max_pos"        in b: state["max_pos"]        = int(b["max_pos"])
-    return {"ok": True}
+<div id="position-section"></div>
 
-@app.post("/api/close/{symbol}")
-async def close_pos(symbol: str):
-    pos = state["positions"].get(symbol)
-    if not pos:
-        return JSONResponse({"error": "Not found"}, 400)
-    try:
-        await close_position_and_record(
-            symbol, "win" if pos["pnl"] >= 0 else "loss")
-        return {"ok": True, "pnl": pos.get("pnl", 0)}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 400)
+<div class="sec">All Trades</div>
+<div class="card" id="trade-log"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No trades yet</div></div>
 
-@app.post("/api/reset_daily")
-async def reset_daily():
-    state["daily_loss_hit"] = False
-    state["bot_on"]         = True
-    state["start_balance"]  = state["balance"]
-    state["today_pnl"]      = 0.0
-    return {"ok": True}
+<script>
+async function refresh(){
+  try{
+    const d = await fetch('/api/state').then(r=>r.json())
+    renderSummary(d)
+    renderFilterBar(d)
+    renderPosition(d.position)
+    renderTrades(d.trades)
+  }catch(e){console.error(e)}
+}
 
-@app.get("/")
-async def root():
-    with open("index.html") as f:
-        return HTMLResponse(f.read())
+function renderFilterBar(d){
+  const el = document.getElementById('filter-bar')
+  el.innerHTML = `Min score: <b>${d.min_score}/100</b> &nbsp;|&nbsp; `+
+    `Trend blocks: <b>${d.trend_blocks}</b> &nbsp;|&nbsp; `+
+    `Score blocks: <b>${d.score_blocks}</b>`
+}
+
+function renderSummary(d){
+  const wr = d.win_rate
+  const pnl = d.total_pnl
+  document.getElementById('summary').innerHTML = `
+    <div class="card">
+      <div class="card-lbl">Total P&L</div>
+      <div class="card-val ${pnl>=0?'green':'red'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</div>
+      <div class="card-sub">Balance: $${d.balance.toFixed(2)}</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">Win Rate</div>
+      <div class="card-val amber">${wr}%</div>
+      <div class="card-sub">${d.wins}W / ${d.losses}L</div>
+    </div>`
+}
+
+function renderPosition(pos){
+  const sec = document.getElementById('position-section')
+  if(!pos){sec.innerHTML='';return}
+  const dir = pos.direction
+  const tp = pos.tp_sl
+  const unreal = pos.unrealized_pct||0
+  sec.innerHTML = `
+    <div class="sec">Open Position</div>
+    <div class="pos-card">
+      <div class="pos-head">
+        <div>
+          <div class="pos-sym">${pos.symbol}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">
+            Entry: $${pos.entry} &nbsp;|&nbsp; Score: ${pos.score} ${pos.label}
+          </div>
+        </div>
+        <div>
+          <div class="pos-dir ${dir==='long'?'long-bg':'short-bg'}">${dir.toUpperCase()}</div>
+          <div style="font-family:'Space Mono',monospace;font-size:14px;font-weight:700;text-align:right;margin-top:6px;color:${unreal>=0?'var(--green)':'var(--red)'}">
+            ${unreal>=0?'+':''}${unreal.toFixed(2)}%
+          </div>
+        </div>
+      </div>
+      <div class="tp-row">
+        <span class="tp-chip ${pos.tp1_hit?'hit':''}">TP1 ${tp.tp1_pct}%</span>
+        <span class="tp-chip ${pos.tp2_hit?'hit':''}">TP2 ${tp.tp2_pct}%</span>
+        <span class="tp-chip">TP3 ${tp.tp3_pct}%</span>
+        <span class="tp-chip" style="color:var(--red)">SL ${tp.sl_pct}%</span>
+      </div>
+      <div class="layers">
+        <div class="layer-row"><span style="color:var(--muted)">UT Bot</span><span>${pos.trend?.ut_bot||'—'}</span></div>
+        <div class="layer-row"><span style="color:var(--muted)">ADX</span><span>${pos.trend?.adx||'—'}</span></div>
+        <div class="layer-row"><span style="color:var(--muted)">vs VWAP</span><span>${pos.trend?.vwap_pass?'✓ Pass':'✗ Fail'}</span></div>
+      </div>
+    </div>`
+}
+
+function renderTrades(trades){
+  if(!trades||!trades.length) return
+  const el = document.getElementById('trade-log')
+  el.innerHTML = trades.map(t=>{
+    const isWin = t.result==='win'
+    return `<div class="trade-row">
+      <div>
+        <div class="trade-sym">${t.symbol}</div>
+        <div class="trade-score">${t.score} ${t.label} &nbsp;·&nbsp; ${t.reason||''}</div>
+      </div>
+      <div class="trade-pnl ${isWin?'green':'red'}">${isWin?'+':''}$${(t.pnl||0).toFixed(2)}</div>
+    </div>`
+  }).join('')
+}
+
+refresh()
+setInterval(refresh, 5000)
+</script>
+</body>
+</html>"""
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0",
-                port=int(os.getenv("PORT", 8000)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
