@@ -217,84 +217,141 @@ async def trend_gate(symbol,direction):
 # ── LAYER 2: ENTRY SCORE ─────────────────────────────────────
 
 async def score_signal(symbol,direction):
+    """
+    FULLY SYMMETRIC scoring — long and short get identical treatment.
+    Long signals:  high bids, buy aggression, sell accel for shorts etc.
+    Short signals: high asks, sell aggression, ask stacking, OI rising+price falling
+    Neither direction has structural advantage.
+    """
     ob_data,trade_data,oi_data,ticker=await asyncio.gather(
         get_orderbook(symbol),get_recent_trades(symbol),
         get_open_interest(symbol),get_ticker(symbol),
     )
     score=0;details={};obi=0.5;buy_ratio=0.5;oi_signal="neutral"
 
-    # OBI 35pts
+    # ── OBI — 35 pts + 5 stacking bonus (symmetric) ──────────
+    # LONG:  bids dominate → buyers loading up
+    # SHORT: asks dominate → sellers loading up
     bids=ob_data.get("b",[]);asks=ob_data.get("a",[])
     if bids and asks:
-        bv=sum(float(b[1]) for b in bids);av=sum(float(a[1]) for a in asks);tot=bv+av
+        bv=sum(float(b[1]) for b in bids)
+        av=sum(float(a[1]) for a in asks)
+        tot=bv+av
         obi=bv/tot if tot>0 else 0.5
+        # Both directions use same distance formula — just mirrored
         dist=max(0,obi-0.5)*2 if direction=="long" else max(0,0.5-obi)*2
         obi_pts=min(dist*35,35);score+=obi_pts
-        bvols=[float(b[1]) for b in bids]
-        stack=len(bvols)>=10 and sum(bvols[:5])/5>=sum(bvols[-5:])/5*1.5
-        if stack and direction=="long":score+=5
-        details.update({"obi":round(obi,4),"obi_pct":round(obi*100,1),
-                        "bid_vol":round(bv,2),"ask_vol":round(av,2),
-                        "bid_stack":stack,"obi_pts":round(obi_pts,1)})
 
-    # CVD 35pts
+        # Stacking bonus — symmetric
+        # LONG:  top bid levels bigger than bottom bid levels
+        # SHORT: top ask levels bigger than bottom ask levels
+        bvols=[float(b[1]) for b in bids]
+        avols=[float(a[1]) for a in asks]
+        bid_stack=len(bvols)>=10 and sum(bvols[:5])/5>=sum(bvols[-5:])/5*1.5
+        ask_stack=len(avols)>=10 and sum(avols[:5])/5>=sum(avols[-5:])/5*1.5
+        if direction=="long"  and bid_stack: score+=5
+        if direction=="short" and ask_stack: score+=5
+
+        details.update({
+            "obi":round(obi,4),"obi_pct":round(obi*100,1),
+            "bid_vol":round(bv,2),"ask_vol":round(av,2),
+            "bid_stack":bid_stack,"ask_stack":ask_stack,
+            "obi_pts":round(obi_pts,1),
+        })
+
+    # ── CVD — 35 pts + 3 acceleration bonus (symmetric) ──────
+    # LONG:  buy_ratio > 0.5, buying accelerating in recent trades
+    # SHORT: sell_ratio > 0.5 (buy_ratio < 0.5), selling accelerating
     if trade_data:
         bvol=sum(float(t["size"]) for t in trade_data if t.get("side")=="Buy")
         svol=sum(float(t["size"]) for t in trade_data if t.get("side")=="Sell")
-        tot=bvol+svol;buy_ratio=bvol/tot if tot>0 else 0.5
+        tot=bvol+svol
+        buy_ratio=bvol/tot if tot>0 else 0.5
+        sell_ratio=1-buy_ratio
         cvd_delta=bvol-svol
+
         dist2=max(0,buy_ratio-0.5)*2 if direction=="long" else max(0,0.5-buy_ratio)*2
         flow_pts=min(dist2*35,35);score+=flow_pts
+
+        # Acceleration — symmetric
+        # LONG:  recent buys > early buys (buy momentum building)
+        # SHORT: recent sells > early sells (sell momentum building)
         f50=trade_data[100:150] if len(trade_data)>=150 else trade_data[:len(trade_data)//2]
         l50=trade_data[:50]
         fb=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")
+        fs=sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
         lb=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")
-        accel=lb>fb*1.2
-        if accel and direction=="long":score+=3
+        ls=sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
+        buy_accel  = lb > fb*1.2   # buying accelerating
+        sell_accel = ls > fs*1.2   # selling accelerating
+        if direction=="long"  and buy_accel:  score+=3
+        if direction=="short" and sell_accel: score+=3
+
+        # CVD Divergence penalty — symmetric
+        # Price moving one way but CVD moving other = fake move = penalty both directions
         diverge=False
         if len(trade_data)>=100:
             early=trade_data[len(trade_data)//2:];late=trade_data[:50]
             ep=float(early[0]["price"]) if early else 0
             lp=float(late[0]["price"])  if late  else 0
-            ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-sum(float(t["size"]) for t in early if t.get("side")=="Sell")
-            lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
+            ec=sum(float(t["size"]) for t in early if t.get("side")=="Buy")-\
+               sum(float(t["size"]) for t in early if t.get("side")=="Sell")
+            lc=sum(float(t["size"]) for t in late  if t.get("side")=="Buy")-\
+               sum(float(t["size"]) for t in late  if t.get("side")=="Sell")
             if ep>0 and (lp>ep)!=(lc>ec):diverge=True;score-=8
-        details.update({"buy_ratio":round(buy_ratio,4),"buy_pct":round(buy_ratio*100,1),
-                        "cvd_delta":round(cvd_delta,2),"accel":accel,
-                        "cvd_diverge":diverge,"flow_pts":round(flow_pts,1)})
 
-    # OI Delta 20pts
+        details.update({
+            "buy_ratio":round(buy_ratio,4),"buy_pct":round(buy_ratio*100,1),
+            "sell_pct":round(sell_ratio*100,1),
+            "cvd_delta":round(cvd_delta,2),
+            "buy_accel":buy_accel,"sell_accel":sell_accel,
+            "accel": buy_accel if direction=="long" else sell_accel,
+            "cvd_diverge":diverge,"flow_pts":round(flow_pts,1),
+        })
+
+    # ── OI Delta — 20 pts (symmetric) ────────────────────────
+    # LONG:  OI rising + price rising   = real longs entering  → +20
+    # SHORT: OI rising + price falling  = real shorts entering → +20
+    # Both: OI falling = positions unwinding = no conviction   → -5
     if oi_data and len(oi_data)>=2:
         try:
-            oi_now=float(oi_data[0]["openInterest"]);oi_prev=float(oi_data[-1]["openInterest"])
+            oi_now=float(oi_data[0]["openInterest"])
+            oi_prev=float(oi_data[-1]["openInterest"])
             oi_pct=(oi_now-oi_prev)/oi_prev*100 if oi_prev>0 else 0
             price_now=float(ticker.get("lastPrice",0))
             price_prev=float(ticker.get("prevPrice24h",price_now) or price_now)
             price_up=price_now>price_prev
-            if oi_pct>0.3 and price_up:        oi_signal="long"; score+=20
-            elif oi_pct>0.3 and not price_up:  oi_signal="short";score+=(20 if direction=="short" else 0)
-            elif oi_pct<-0.3:                  oi_signal="unwind";score-=5
-            else:                              score+=5
-            details.update({"oi_pct":round(oi_pct,3),"oi_now":round(oi_now,0),
-                            "oi_signal":oi_signal,"price_up":price_up})
+
+            if   oi_pct>0.3 and price_up:       oi_signal="long";  score+=20
+            elif oi_pct>0.3 and not price_up:   oi_signal="short"; score+=20  # ← was 0 before!
+            elif oi_pct<-0.3:                   oi_signal="unwind";score-=5
+            else:                               oi_signal="neutral";score+=5
+
+            details.update({
+                "oi_pct":round(oi_pct,3),"oi_now":round(oi_now,0),
+                "oi_signal":oi_signal,"price_up":price_up,
+            })
         except Exception as e:
             print(f"OI score err:{e}");score+=5
     else:
         score+=5
 
-    # All 3 agree +10
+    # ── All 3 agree bonus — +10 pts (symmetric) ──────────────
     votes=0
-    if obi>0.58 and direction=="long":   votes+=1
-    if obi<0.42 and direction=="short":  votes+=1
-    if buy_ratio>0.55 and direction=="long":  votes+=1
-    if buy_ratio<0.45 and direction=="short": votes+=1
-    if oi_signal==direction:             votes+=1
+    if direction=="long":
+        if obi>0.58:          votes+=1   # bids dominating
+        if buy_ratio>0.55:    votes+=1   # buyers aggressive
+        if oi_signal=="long": votes+=1   # new longs entering
+    else:
+        if obi<0.42:           votes+=1  # asks dominating
+        if buy_ratio<0.45:     votes+=1  # sellers aggressive
+        if oi_signal=="short": votes+=1  # new shorts entering
     if votes==3:score+=10
     details["votes"]=votes;details["votes_agree"]=(votes==3)
 
     score=max(0,min(100,int(score)))
     if   score>=90:label="VERY STRONG"
-    elif score>=75:label="STRONG"
+    elif score>=70:label="STRONG"
     elif score>=55:label="MEDIUM"
     else:          label="WEAK"
     return score,label,details
@@ -379,38 +436,51 @@ async def scan_symbol(symbol):
     change=(price-price24)/price24*100 if price24>0 else 0
     vol=float(ticker.get("volume24h",0))
     if vol<500_000 or abs(change)>15:return
-    direction="long" if change>0 else "short"
 
-    gate_ok,gate_info=await trend_gate(symbol,direction)
-    scan_entry={"symbol":symbol,"direction":direction,"price":round(price,4),
+    # ── 24h change filter — only trade FRESH moves ───────────
+    # Already up >5%  → long exhausted, skip
+    # Already down >5% → short exhausted, skip
+    skip_long  = change >  5.0
+    skip_short = change < -5.0
+
+    best_score=0; best_dir=None; best_gate=None; best_details=None; best_label=None
+
+    for direction in ["long","short"]:
+        if direction=="long"  and skip_long:  continue
+        if direction=="short" and skip_short: continue
+        gate_ok,gate_info=await trend_gate(symbol,direction)
+        if not gate_ok:
+            state["trend_blocks"]+=1
+            print(f"  BLOCKED {symbol} {direction.upper()} | {gate_info.get('reason','')}");continue
+        score,label,details=await score_signal(symbol,direction)
+        print(f"  SCORED {symbol} {direction.upper()} | {score} ({label})")
+        if score>best_score:
+            best_score=score;best_dir=direction
+            best_gate=gate_info;best_details=details;best_label=label
+
+    scan_entry={"symbol":symbol,"direction":best_dir or "none","price":round(price,4),
                 "change":round(change,2),"vol":round(vol/1e6,1),
-                "gate":gate_info,"score":None,"label":None,"details":None,
-                "blocked_by":None,"time":int(time.time())}
+                "gate":best_gate or {},"score":best_score if best_dir else None,
+                "label":best_label,"details":best_details,
+                "blocked_by":None if (best_dir and best_score>=MIN_SCORE) else ("score" if best_dir else "trend_gate"),
+                "time":int(time.time())}
 
-    if not gate_ok:
-        state["trend_blocks"]+=1
-        scan_entry["blocked_by"]="trend_gate"
-        scan_entry["gate"]=gate_info
-        _add_scan_log(scan_entry)
-        print(f"  BLOCKED {symbol} │ {gate_info.get('reason','')}");return
+    if not best_dir:
+        _add_scan_log(scan_entry);return
 
-    score,label,details=await score_signal(symbol,direction)
-    scan_entry["score"]=score;scan_entry["label"]=label;scan_entry["details"]=details
-
-    if score<MIN_SCORE:
+    if best_score<MIN_SCORE:
         state["score_blocks"]+=1
-        scan_entry["blocked_by"]="score"
         _add_scan_log(scan_entry)
-        print(f"  BLOCKED {symbol} │ Score {score}<{MIN_SCORE}");return
+        print(f"  BLOCKED {symbol} | Best score {best_score}<{MIN_SCORE}");return
 
     scan_entry["blocked_by"]=None
     _add_scan_log(scan_entry)
-    print(f"  ✅ SIGNAL {symbol} │ {direction.upper()} │ {score} ({label})")
-    state["last_signal"]={"symbol":symbol,"direction":direction,"score":score,
-                           "label":label,"gate":gate_info,"details":details,"time":int(time.time())}
-    state["signal_params"]={"symbol":symbol,"direction":direction,"score":score,
-                             "label":label,"gate":gate_info,"details":details}
-    await enter_trade(symbol,direction,score,label,price)
+    print(f"  SIGNAL {symbol} | {best_dir.upper()} | {best_score} ({best_label})")
+    state["last_signal"]={"symbol":symbol,"direction":best_dir,"score":best_score,
+                           "label":best_label,"gate":best_gate,"details":best_details,"time":int(time.time())}
+    state["signal_params"]={"symbol":symbol,"direction":best_dir,"score":best_score,
+                             "label":best_label,"gate":best_gate,"details":best_details}
+    await enter_trade(symbol,best_dir,best_score,best_label,price)
 
 def _add_scan_log(entry):
     state["scan_log"].insert(0,entry)
