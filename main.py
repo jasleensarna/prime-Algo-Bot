@@ -194,25 +194,20 @@ def _vwap(candles):
     return tpv/tv if tv>0 else 0.0
 
 async def trend_gate(symbol,direction):
-    c15=await get_klines(symbol,"15",60)
-    c5 =await get_klines(symbol,"5", 30)
-    if not c15 or not c5:return False,{"reason":"no data"}
-    # UT Bot + ADX>18 + VWAP — all 3 must pass
-    ut=_ut_bot(c15);adx=_adx(c15);vwap=_vwap(c5);price=float(c5[-1][4])
-    ut_ok  =ut==direction or ut=="neutral"
-    adx_ok =adx>=18
+    # VWAP only — real-time, no lag, fully symmetric
+    # Price above VWAP = buyers in control = long valid
+    # Price below VWAP = sellers in control = short valid
+    c5=await get_klines(symbol,"5",30)
+    if not c5:return False,{"reason":"no data"}
+    vwap=_vwap(c5);price=float(c5[-1][4])
     vwap_ok=price>vwap if direction=="long" else price<vwap
-    passed =ut_ok and adx_ok and vwap_ok
-    info={"ut":ut,"adx":round(adx,1),"vwap":round(vwap,6),
-          "price":round(price,6),"price_vs_vwap_pct":round((price-vwap)/vwap*100,3),
-          "ut_ok":ut_ok,"adx_ok":adx_ok,"vwap_ok":vwap_ok,"passed":passed}
-    if not passed:
-        fails=[]
-        if not ut_ok:  fails.append(f"UT Bot={ut}")
-        if not adx_ok: fails.append(f"ADX={adx:.1f}<18")
-        if not vwap_ok:fails.append("Price on wrong side of VWAP")
-        info["reason"]=" | ".join(fails)
-    return passed,info
+    pct=round((price-vwap)/vwap*100,3)
+    info={"ut":"removed","adx":"removed","vwap":round(vwap,6),
+          "price":round(price,6),"price_vs_vwap_pct":pct,
+          "ut_ok":True,"adx_ok":True,"vwap_ok":vwap_ok,"passed":vwap_ok}
+    if not vwap_ok:
+        info["reason"]=f"Price {'below' if direction=='long' else 'above'} VWAP ({pct:+.2f}%)"
+    return vwap_ok,info
 
 # ── LAYER 2: ENTRY SCORE ─────────────────────────────────────
 
