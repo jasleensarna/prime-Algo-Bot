@@ -481,10 +481,33 @@ def _add_scan_log(entry):
     state["scan_log"].insert(0,entry)
     state["scan_log"]=state["scan_log"][:20]
 
+async def get_qty_step(symbol):
+    """Fetch Bybit required qty step for this symbol"""
+    try:
+        r=await _get("/v5/market/instruments-info",{"category":"linear","symbol":symbol})
+        info=r.get("result",{}).get("list",[])
+        if info:
+            step=info[0].get("lotSizeFilter",{}).get("qtyStep","0.001")
+            return float(step)
+    except Exception as e:
+        print(f"Step size err {symbol}:{e}")
+    return 0.001
+
+def round_qty(qty,step):
+    """Round qty DOWN to nearest valid step"""
+    import math
+    if step<=0:return round(qty,3)
+    decimals=max(0,-int(math.floor(math.log10(step))))
+    return round(math.floor(qty/step)*step,decimals)
+
 async def enter_trade(symbol,direction,score,label,price):
     sizing=get_sizing(score,state["balance"]);tpsl=get_tp_sl(score,price,direction)
-    qty=round(sizing["size"]*LEVERAGE/price,3)
-    if qty<=0:return
+    raw_qty=sizing["size"]*LEVERAGE/price
+    step=await get_qty_step(symbol)
+    qty=round_qty(raw_qty,step)
+    print(f"  QTY {symbol}: raw={raw_qty:.6f} step={step} final={qty}")
+    if qty<=0 or qty<step:
+        print(f"  QTY too small {symbol}:{qty}<step {step}");return
     resp=await place_order(symbol,direction,qty,tpsl["sl"],tpsl["tp1"])
     if not resp or resp.get("retCode")!=0:
         print(f"Order failed {symbol}:{resp}");return
