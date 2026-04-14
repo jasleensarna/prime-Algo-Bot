@@ -519,10 +519,38 @@ async def enter_trade(symbol,direction,score,label,price):
     }
     await save_to_supabase(state["position"],"open",price)
 
+async def check_position_still_open(symbol,side):
+    """Check if position is still open on Bybit — detects manual closes"""
+    try:
+        r=await _get("/v5/position/list",{"category":"linear","symbol":symbol},signed=True)
+        positions=r.get("result",{}).get("list",[])
+        for p in positions:
+            if p.get("symbol")==symbol:
+                size=float(p.get("size",0))
+                pos_side=p.get("side","")  # Buy or Sell
+                if size>0:
+                    return True  # still open
+        return False  # closed externally
+    except Exception as e:
+        print(f"Position check err {symbol}:{e}")
+        return True  # assume open if error
+
 async def manage_position():
     pos=state["position"]
     if not pos:return
     symbol=pos["symbol"];side=pos["side"];entry=pos["entry"]
+
+    # ── Detect manual close on Bybit ──
+    still_open=await check_position_still_open(symbol,side)
+    if not still_open:
+        print(f"  MANUAL CLOSE detected {symbol} — syncing dashboard")
+        ticker=await get_ticker(symbol)
+        price=float(ticker.get("lastPrice",entry)) if ticker else entry
+        pnl_pct=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
+        result="win" if pnl_pct>0 else "loss"
+        await record_close(pos,price,result,"ManualClose")
+        return
+
     ticker=await get_ticker(symbol)
     if not ticker:return
     price=float(ticker.get("lastPrice",0))
@@ -601,20 +629,41 @@ async def save_to_supabase(trade,result,price):
         print(f"Supabase err:{e}")
 
 async def load_from_supabase():
+    """Load full trade history from Supabase on startup"""
     if not SB_URL or not SB_KEY:return
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            r=await c.get(f"{SB_URL}/rest/v1/trades?select=result,pnl&order=created_at.asc",
-                         headers={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"})
+        async with httpx.AsyncClient(timeout=8) as c:
+            r=await c.get(
+                f"{SB_URL}/rest/v1/trades?select=*&order=created_at.asc",
+                headers={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"}
+            )
             trades=r.json()
             if isinstance(trades,list):
-                state["wins"]     =sum(1 for t in trades if (t.get("result","")).lower()=="win")
-                state["losses"]   =sum(1 for t in trades if (t.get("result","")).lower()=="loss")
-                state["total_pnl"]=round(sum(float(t.get("pnl",0)) for t in trades),4)
-                state["trades"]   =trades[-50:]
-                print(f"Restored: W={state['wins']} L={state['losses']} PnL=${state['total_pnl']:.2f}")
+                closed=[t for t in trades if (t.get("result","")).lower() in ("win","loss")]
+                state["wins"]     =sum(1 for t in closed if (t.get("result","")).lower()=="win")
+                state["losses"]   =sum(1 for t in closed if (t.get("result","")).lower()=="loss")
+                state["total_pnl"]=round(sum(float(t.get("pnl",0)) for t in closed),4)
+                state["trades"]   =closed[-100:]
+                print(f"Restored: W={state['wins']} L={state['losses']} PnL=${state['total_pnl']:.2f} ({len(closed)} trades)")
     except Exception as e:
         print(f"Supabase load err:{e}")
+
+async def fetch_trades_from_supabase():
+    """Always fetch latest trades direct from Supabase for API response"""
+    if not SB_URL or not SB_KEY:return state["trades"]
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r=await c.get(
+                f"{SB_URL}/rest/v1/trades?select=*&order=created_at.desc&limit=100",
+                headers={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"}
+            )
+            trades=r.json()
+            if isinstance(trades,list):
+                closed=[t for t in trades if (t.get("result","")).lower() in ("win","loss")]
+                return closed
+    except Exception as e:
+        print(f"Supabase fetch err:{e}")
+    return state["trades"]
 
 # ── BOT LOOP ─────────────────────────────────────────────────
 
@@ -663,7 +712,8 @@ async def api_status():
 
 @app.get("/api/trades")
 async def api_trades():
-    return JSONResponse(state["trades"])
+    trades=await fetch_trades_from_supabase()
+    return JSONResponse(trades)
 
 @app.get("/api/scan_log")
 async def api_scan_log():
@@ -1318,8 +1368,16 @@ function startRefreshBar() {
 // ── Fetch ──
 async function fetchData() {
   try {
-    const r = await fetch('/api/status');
-    data = await r.json();
+    const [statusRes, tradesRes] = await Promise.all([
+      fetch('/api/status'),
+      fetch('/api/trades'),
+    ]);
+    data = await statusRes.json();
+    const trades = await tradesRes.json();
+    // Always use live Supabase trades — overrides in-memory state
+    if (Array.isArray(trades) && trades.length > 0) {
+      data.trades = trades;
+    }
     render();
     startRefreshBar();
   } catch (e) {
