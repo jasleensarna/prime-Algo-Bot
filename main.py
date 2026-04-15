@@ -143,6 +143,13 @@ async def update_sl(symbol,sl_price):
         "stopLoss":str(round(sl_price,6)),"positionIdx":"0",
     })
 
+async def set_tp_on_bybit(symbol,tp_price):
+    """Update take profit on Bybit so it shows on the chart"""
+    return await _post("/v5/position/trading-stop",{
+        "category":"linear","symbol":symbol,
+        "takeProfit":str(round(tp_price,6)),"positionIdx":"0",
+    })
+
 # ── LAYER 1: TREND GATE ──────────────────────────────────────
 
 def _atr(candles,period=14):
@@ -357,36 +364,81 @@ def get_sizing(score,balance):
     pct=25.0 if score>=90 else 20.0 if score>=80 else 15.0
     return {"pct":pct,"size":round(min(balance*pct/100,balance*0.30),2)}
 
-def get_tp_sl(score,entry,direction):
-    if   score>=90:tp1,tp2,tp3,sl=10.0,25.0,40.0,4.0
-    elif score>=80:tp1,tp2,tp3,sl=7.0,18.0,30.0,3.5
-    else:          tp1,tp2,tp3,sl=5.0,12.0,20.0,3.0
-    m=1 if direction=="long" else -1
-    return {"tp1":round(entry*(1+m*tp1/100),6),"tp2":round(entry*(1+m*tp2/100),6),
-            "tp3":round(entry*(1+m*tp3/100),6),"sl":round(entry*(1-m*sl/100),6),
-            "tp1_pct":tp1,"tp2_pct":tp2,"tp3_pct":tp3,"sl_pct":sl}
+def get_sl(score, entry, direction):
+    """
+    No fixed TP — exit is driven entirely by momentum exhaustion.
+    Only a hard SL is set at entry to cap downside.
+    SL tightens slightly with higher score conviction.
+    """
+    if   score >= 90: sl_pct = 3.0
+    elif score >= 80: sl_pct = 2.5
+    else:             sl_pct = 2.0   # 75-79
+    m = 1 if direction == "long" else -1
+    sl = round(entry * (1 - m * sl_pct / 100), 6)
+    return {"sl": sl, "sl_pct": sl_pct}
 
 # ── EXIT 2 & 3 ───────────────────────────────────────────────
 
-async def check_momentum_exit(symbol,pos):
-    entry=pos["entry"];side=pos["side"]
-    c5=await get_klines(symbol,"5",15)
-    if not c5 or len(c5)<10:return False,""
-    price=float(c5[-1][4])
-    pnl=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
-    if pnl<2.0:return False,""
-    bodies=[abs(float(c[4])-float(c[1])) for c in c5]
-    shrinking=bodies[-3]>bodies[-2]>bodies[-1]
-    avg=sum(bodies[-10:])/10;tiny=bodies[-1]<avg*0.40
-    trades=await get_recent_trades(symbol);cvd_falling=False
-    if trades and len(trades)>=100:
-        f50=trades[50:100];l50=trades[:50]
-        fc=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")-sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
-        lc=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")-sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
-        cvd_falling=(lc<fc*0.6 if side=="long" else lc>fc*0.6)
-    should=shrinking and tiny and cvd_falling
-    reason=f"Momentum exhaustion at {pnl:.1f}% profit" if should else ""
-    return should,reason
+async def check_momentum_exit(symbol, pos):
+    """
+    Dynamic exit based on move exhaustion.
+    This is the ONLY exit besides hard SL.
+    Checks:
+      1. 3 consecutive shrinking candle bodies
+      2. Current body < 40% of 10-candle average
+      3. CVD slope flattening or turning negative
+    No minimum profit required — exits whenever move is done,
+    even at small profit, to avoid giveback.
+    """
+    entry = pos["entry"]; side = pos["side"]
+    c5 = await get_klines(symbol, "5", 15)
+    if not c5 or len(c5) < 10:
+        return False, ""
+
+    price = float(c5[-1][4])
+    pnl = (price - entry)/entry*100 if side=="long" else (entry - price)/entry*100
+
+    # Must be in at least small profit — don't exit at a loss
+    # (SL handles losses)
+    if pnl < 0.3:
+        return False, ""
+
+    # ── Signal 1: Shrinking candle bodies ──
+    bodies = [abs(float(c[4]) - float(c[1])) for c in c5]
+    shrinking = bodies[-3] > bodies[-2] > bodies[-1]
+
+    # ── Signal 2: Current body tiny vs recent average ──
+    avg = sum(bodies[-10:]) / 10
+    tiny = avg > 0 and bodies[-1] < avg * 0.40
+
+    # ── Signal 3: CVD flattening ──
+    trades = await get_recent_trades(symbol)
+    cvd_flat = False
+    if trades and len(trades) >= 100:
+        f50 = trades[50:100]; l50 = trades[:50]
+        fc = sum(float(t["size"]) for t in f50 if t.get("side")=="Buy") - \
+             sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
+        lc = sum(float(t["size"]) for t in l50 if t.get("side")=="Buy") - \
+             sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
+        if side == "long":
+            cvd_flat = lc < fc * 0.65   # buying pressure dropped >35%
+        else:
+            cvd_flat = lc > fc * 0.65   # selling pressure dropped >35%
+
+    # Exit if at least 2 of 3 signals agree
+    # (3/3 = very confident, 2/3 = cautious but enough)
+    signals_fired = sum([shrinking, tiny, cvd_flat])
+    should = signals_fired >= 2
+
+    reason = ""
+    if should:
+        fired = []
+        if shrinking:  fired.append("shrinking candles")
+        if tiny:       fired.append(f"body {bodies[-1]:.4f}<40% avg")
+        if cvd_flat:   fired.append("CVD flat")
+        reason = f"Exhaustion ({', '.join(fired)}) at {pnl:.2f}% profit"
+
+    return should, reason
 
 async def check_structure_break(symbol,pos):
     entry=pos["entry"];side=pos["side"]
@@ -500,26 +552,54 @@ def round_qty(qty,step):
     decimals=max(0,-int(math.floor(math.log10(step))))
     return round(math.floor(qty/step)*step,decimals)
 
-async def enter_trade(symbol,direction,score,label,price):
-    sizing=get_sizing(score,state["balance"]);tpsl=get_tp_sl(score,price,direction)
-    raw_qty=sizing["size"]*LEVERAGE/price
-    step=await get_qty_step(symbol)
-    qty=round_qty(raw_qty,step)
-    print(f"  QTY {symbol}: raw={raw_qty:.6f} step={step} final={qty}")
-    if qty<=0 or qty<step:
-        print(f"  QTY too small {symbol}:{qty}<step {step}");return
-    resp=await place_order(symbol,direction,qty,tpsl["sl"],tpsl["tp1"])
-    if not resp or resp.get("retCode")!=0:
-        print(f"Order failed {symbol}:{resp}");return
-    state["position"]={
-        "symbol":symbol,"side":direction,"entry":price,"qty":qty,"qty_remaining":qty,
-        "score":score,"label":label,"tp1":tpsl["tp1"],"tp2":tpsl["tp2"],"tp3":tpsl["tp3"],
-        "sl":tpsl["sl"],"tp1_pct":tpsl["tp1_pct"],"tp2_pct":tpsl["tp2_pct"],"tp3_pct":tpsl["tp3_pct"],
-        "sl_pct":tpsl["sl_pct"],"tp1_hit":False,"tp2_hit":False,"be_moved":False,"open_time":int(time.time()),
-    }
-    await save_to_supabase(state["position"],"open",price)
+async def enter_trade(symbol, direction, score, label, price):
+    sizing = get_sizing(score, state["balance"])
+    sl_data = get_sl(score, price, direction)
 
-async def check_position_still_open(symbol,side):
+    raw_qty = sizing["size"] * LEVERAGE / price
+    step    = await get_qty_step(symbol)
+    qty     = round_qty(raw_qty, step)
+
+    print(f"  QTY {symbol}: raw={raw_qty:.6f} step={step} final={qty}")
+    if qty <= 0 or qty < step:
+        print(f"  QTY too small {symbol}: {qty} < step {step}"); return
+
+    # Place order with SL only — no TP set on exchange
+    # Exit is handled dynamically by momentum exhaustion logic
+    resp = await place_order_sl_only(symbol, direction, qty, sl_data["sl"])
+    if not resp or resp.get("retCode") != 0:
+        print(f"Order failed {symbol}: {resp}"); return
+
+    print(f"  ORDER {symbol} {direction.upper()} qty={qty} "
+          f"SL={sl_data['sl']} ({sl_data['sl_pct']}%) — dynamic exit active")
+
+    state["position"] = {
+        "symbol":    symbol,
+        "side":      direction,
+        "entry":     price,
+        "qty":       qty,
+        "qty_remaining": qty,
+        "score":     score,
+        "label":     label,
+        "sl":        sl_data["sl"],
+        "sl_pct":    sl_data["sl_pct"],
+        "peak_pnl":  0.0,   # track highest profit seen
+        "open_time": int(time.time()),
+    }
+    await save_to_supabase(state["position"], "open", price)
+
+async def place_order_sl_only(symbol, side, qty, sl):
+    """Place market order with SL only — no fixed TP"""
+    return await _post("/v5/order/create", {
+        "category":   "linear",
+        "symbol":     symbol,
+        "side":       "Buy" if side == "long" else "Sell",
+        "orderType":  "Market",
+        "qty":        str(qty),
+        "stopLoss":   str(round(sl, 6)),
+        "leverage":   str(LEVERAGE),
+        "positionIdx": "0",
+    })
     """Check if position is still open on Bybit — detects manual closes"""
     try:
         r=await _get("/v5/position/list",{"category":"linear","symbol":symbol},signed=True)
@@ -536,79 +616,100 @@ async def check_position_still_open(symbol,side):
         return True  # assume open if error
 
 async def manage_position():
-    pos=state["position"]
-    if not pos:return
-    symbol=pos["symbol"];side=pos["side"];entry=pos["entry"]
+    """
+    Monitor open position every 30 seconds.
+    Two exits only:
+      1. Hard SL — set on Bybit at entry, triggers automatically
+      2. Dynamic exit — momentum exhaustion detected here
+    No fixed TPs. Bot rides the move until it dies.
+    Also detects manual closes on Bybit.
+    """
+    pos = state["position"]
+    if not pos: return
 
-    # ── Detect manual close on Bybit ──
-    still_open=await check_position_still_open(symbol,side)
+    symbol = pos["symbol"]; side = pos["side"]; entry = pos["entry"]
+
+    # ── Check if manually closed on Bybit ──
+    still_open = await check_position_still_open(symbol, side)
     if not still_open:
-        print(f"  MANUAL CLOSE detected {symbol} — syncing dashboard")
-        ticker=await get_ticker(symbol)
-        price=float(ticker.get("lastPrice",entry)) if ticker else entry
-        pnl_pct=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
-        result="win" if pnl_pct>0 else "loss"
-        await record_close(pos,price,result,"ManualClose")
+        ticker = await get_ticker(symbol)
+        price  = float(ticker.get("lastPrice", entry)) if ticker else entry
+        pnl    = (price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
+        result = "win" if pnl > 0 else "loss"
+        print(f"  MANUAL CLOSE {symbol} | {pnl:+.2f}%")
+        await record_close(pos, price, result, "ManualClose")
         return
 
-    ticker=await get_ticker(symbol)
-    if not ticker:return
-    price=float(ticker.get("lastPrice",0))
-    if price==0:return
-    pnl=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
+    ticker = await get_ticker(symbol)
+    if not ticker: return
+    price = float(ticker.get("lastPrice", 0))
+    if price == 0: return
 
-    if not pos["tp1_hit"]:
-        if (side=="long" and price>=pos["tp1"]) or (side=="short" and price<=pos["tp1"]):
-            pos["tp1_hit"]=True;pos["be_moved"]=True
-            await update_sl(symbol,entry*1.001 if side=="long" else entry*0.999)
-            cq=round(pos["qty"]*0.40,3)
-            await close_full(symbol,cq,side)
-            pos["qty_remaining"]=round(pos["qty_remaining"]-cq,3)
+    pnl = (price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
 
-    if pos["tp1_hit"] and not pos["tp2_hit"]:
-        if (side=="long" and price>=pos["tp2"]) or (side=="short" and price<=pos["tp2"]):
-            pos["tp2_hit"]=True
-            trail=pos["tp1"]*1.001 if side=="long" else pos["tp1"]*0.999
-            await update_sl(symbol,trail)
-            cq=round(pos["qty"]*0.40,3)
-            await close_full(symbol,cq,side)
-            pos["qty_remaining"]=round(pos["qty_remaining"]-cq,3)
+    # Track peak profit for display
+    if pnl > pos.get("peak_pnl", 0):
+        pos["peak_pnl"] = round(pnl, 3)
 
-    if pos["tp2_hit"]:
-        if (side=="long" and price>=pos["tp3"]) or (side=="short" and price<=pos["tp3"]):
-            await close_full(symbol,pos["qty_remaining"],side)
-            await record_close(pos,price,"win","TP3");return
+    def _close_ok(resp):
+        if not resp: return False
+        if resp.get("retCode") != 0:
+            print(f"  CLOSE FAIL {symbol}: {resp.get('retMsg')} ({resp.get('retCode')})")
+            return False
+        return True
 
-    if (side=="long" and price<=pos["sl"]) or (side=="short" and price>=pos["sl"]):
-        await close_full(symbol,pos["qty_remaining"],side)
-        await record_close(pos,price,"loss","SL");return
+    # ── Hard SL check (backup in case Bybit SL didn't fire) ──
+    sl_hit = (side=="long" and price <= pos["sl"]) or \
+             (side=="short" and price >= pos["sl"])
+    if sl_hit:
+        resp = await close_full(symbol, pos["qty_remaining"], side)
+        if _close_ok(resp):
+            print(f"  SL HIT {symbol} | {pnl:+.2f}%")
+            await record_close(pos, price, "loss", "SL")
+            return
 
-    me,mr=await check_momentum_exit(symbol,pos)
-    if me:
-        await close_full(symbol,pos["qty_remaining"],side)
-        await record_close(pos,price,"win" if pnl>0 else "loss","MomentumExit");return
+    # ── Dynamic exit: momentum exhaustion ──
+    should_exit, reason = await check_momentum_exit(symbol, pos)
+    if should_exit:
+        resp = await close_full(symbol, pos["qty_remaining"], side)
+        if _close_ok(resp):
+            result = "win" if pnl > 0 else "loss"
+            print(f"  DYNAMIC EXIT {symbol} | {reason}")
+            await record_close(pos, price, result, "DynamicExit")
+            return
 
-    sb,sr=await check_structure_break(symbol,pos)
-    if sb:
-        await close_full(symbol,pos["qty_remaining"],side)
-        await record_close(pos,price,"win" if pnl>0 else "loss","StructureBreak");return
+    # ── Still holding ──
+    print(f"  HOLDING {symbol} | {side.upper()} | "
+          f"PnL: {pnl:+.2f}% | Peak: {pos.get('peak_pnl',0):+.2f}% | "
+          f"SL: ${pos['sl']:.4f}")
 
-    print(f"  HOLDING {symbol} │ {pnl:+.2f}% │ TP1={'✓' if pos['tp1_hit'] else '○'} TP2={'✓' if pos['tp2_hit'] else '○'}")
-
-async def record_close(pos,exit_price,result,exit_type):
-    entry=pos["entry"];side=pos["side"]
-    pnl_pct=(exit_price-entry)/entry*100 if side=="long" else (entry-exit_price)/entry*100
-    pnl_usd=pos["qty"]*entry*(pnl_pct/100)*LEVERAGE
-    trade={"symbol":pos["symbol"],"direction":side,"result":result,"entry":entry,
-           "exit_price":exit_price,"pnl":round(pnl_usd,4),"pnl_pct":round(pnl_pct,3),
-           "score":pos["score"],"label":pos["label"],"tp1_hit":pos["tp1_hit"],
-           "tp2_hit":pos["tp2_hit"],"exit_type":exit_type,"open_time":pos["open_time"],
-           "close_time":int(time.time())}
-    state["trades"].append(trade);state["trades"]=state["trades"][-100:]
-    if result=="win":state["wins"]+=1
-    else:            state["losses"]+=1
-    state["total_pnl"]+=pnl_usd;state["position"]=None
-    await save_to_supabase(trade,result,exit_price)
+async def record_close(pos, exit_price, result, exit_type):
+    entry = pos["entry"]; side = pos["side"]
+    pnl_pct = (exit_price-entry)/entry*100 if side=="long" else (entry-exit_price)/entry*100
+    pnl_usd = pos["qty"] * entry * (pnl_pct/100) * LEVERAGE
+    trade = {
+        "symbol":     pos["symbol"],
+        "direction":  side,
+        "result":     result,
+        "entry":      entry,
+        "exit_price": exit_price,
+        "pnl":        round(pnl_usd, 4),
+        "pnl_pct":    round(pnl_pct, 3),
+        "score":      pos["score"],
+        "label":      pos["label"],
+        "peak_pnl":   pos.get("peak_pnl", 0),
+        "exit_type":  exit_type,
+        "open_time":  pos["open_time"],
+        "close_time": int(time.time()),
+    }
+    state["trades"].append(trade)
+    state["trades"] = state["trades"][-100:]
+    if result == "win": state["wins"]  += 1
+    else:               state["losses"] += 1
+    state["total_pnl"] += pnl_usd
+    state["position"]   = None
+    print(f"  CLOSED {result.upper()} | {exit_type} | {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | Peak was {pos.get('peak_pnl',0):+.2f}%")
+    await save_to_supabase(trade, result, exit_price)
 
 # ── SUPABASE ─────────────────────────────────────────────────
 
@@ -1604,37 +1705,23 @@ function renderPosition() {
       <div class="pm"><span class="pm-k">Remaining</span><span class="pm-v">${pos.qty_remaining}</span></div>
     </div>
 
-    <div class="tp-row">
-      <div class="tp-node ${tp1c}">
-        <div class="tp-circle"></div>
-        <span class="tp-k">TP1</span>
-        <span class="tp-v">+${pos.tp1_pct}%</span>
-        ${pos.tp1_hit ? '<span style="font-size:10px;color:var(--green3)">✓</span>' : ''}
+    <div style="background:rgba(61,255,160,0.06);border:1px solid rgba(61,255,160,0.15);border-radius:10px;padding:12px;margin-top:12px">
+      <div style="font-size:10px;color:var(--ink3);font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">Exit Strategy</div>
+      <div style="font-size:13px;color:#aaa;line-height:1.6">
+        <span style="color:var(--green2)">●</span> Dynamic exit — watching for exhaustion<br>
+        <span style="color:#555">●</span> Shrinking candles + CVD flat = exit<br>
+        <span style="color:var(--red2)">●</span> Hard SL at $${fmt(pos.sl,4)} (−${pos.sl_pct}%)
       </div>
-      <div class="tp-line ${line1c}"></div>
-      <div class="tp-node ${tp2c}">
-        <div class="tp-circle"></div>
-        <span class="tp-k">TP2</span>
-        <span class="tp-v">+${pos.tp2_pct}%</span>
-        ${pos.tp2_hit ? '<span style="font-size:10px;color:var(--green3)">✓</span>' : ''}
-      </div>
-      <div class="tp-line ${line2c}"></div>
-      <div class="tp-node">
-        <div class="tp-circle"></div>
-        <span class="tp-k">TP3</span>
-        <span class="tp-v">+${pos.tp3_pct}%</span>
-      </div>
+      ${pos.peak_pnl > 0 ? `<div style="margin-top:8px;font-size:12px;color:var(--green2);font-family:var(--mono)">Peak profit seen: +${fmt(pos.peak_pnl,2)}%</div>` : ''}
     </div>
-    ${pos.be_moved ? '<div class="be-badge">⬆ Stop loss moved to breakeven</div>' : ''}
   </div>
 
   <div class="slbl" style="margin-top:20px">Entry Signal Params</div>
   <div class="icard">
-    <div class="ir"><span class="k">OBI Score</span><span class="v">${pos.score} pts</span></div>
-    <div class="ir"><span class="k">Label</span><span class="v">${pos.label}</span></div>
+    <div class="ir"><span class="k">Score</span><span class="v">${pos.score} · ${pos.label}</span></div>
     <div class="ir"><span class="k">Direction</span><span class="v"><span class="badge ${isLong?'b-long':'b-short'}">${pos.side.toUpperCase()}</span></span></div>
-    <div class="ir"><span class="k">TP1 / TP2 / TP3</span><span class="v">${pos.tp1_pct}% / ${pos.tp2_pct}% / ${pos.tp3_pct}%</span></div>
-    <div class="ir"><span class="k">Stop Loss %</span><span class="v">−${pos.sl_pct}%</span></div>
+    <div class="ir"><span class="k">Hard SL</span><span class="v" style="color:var(--red2)">−${pos.sl_pct}%</span></div>
+    <div class="ir"><span class="k">Exit Type</span><span class="v" style="color:var(--green2)">Momentum Exhaustion</span></div>
   </div>`;
 }
 
