@@ -834,49 +834,60 @@ async def startup():
 
 @app.get("/api/status")
 async def api_status():
-    wins=state["wins"]; losses=state["losses"]; total=wins+losses
+    wins    = state["wins"]
+    losses  = state["losses"]
+    total   = wins + losses
 
-    # Fetch live prices for all open positions in parallel
+    # Build positions data using cached entry price if live fetch fails
+    # Never let a Bybit API timeout crash the dashboard
     positions_data = {}
-    if state["positions"]:
-        tickers = await asyncio.gather(*[
-            get_ticker(sym) for sym in state["positions"]
-        ])
-        for sym, tk in zip(state["positions"].keys(), tickers):
-            pos = state["positions"][sym]
-            try:
-                live_price = float(tk.get("lastPrice", pos["entry"]))
-                pnl_pct = (live_price-pos["entry"])/pos["entry"]*100 if pos["side"]=="long" \
-                          else (pos["entry"]-live_price)/pos["entry"]*100
-                positions_data[sym] = {**pos, "live_price": round(live_price,6),
-                                              "live_pnl_pct": round(pnl_pct,3)}
-            except:
-                positions_data[sym] = pos
+    for sym, pos in state["positions"].items():
+        try:
+            tk = await asyncio.wait_for(get_ticker(sym), timeout=3.0)
+            live_price = float(tk.get("lastPrice", pos["entry"]))
+            pnl_pct = (live_price - pos["entry"]) / pos["entry"] * 100 \
+                      if pos["side"] == "long" \
+                      else (pos["entry"] - live_price) / pos["entry"] * 100
+            positions_data[sym] = {
+                **pos,
+                "live_price":   round(live_price, 6),
+                "live_pnl_pct": round(pnl_pct, 3),
+            }
+        except Exception:
+            # Fallback — show last known data, no live price
+            positions_data[sym] = {
+                **pos,
+                "live_price":   pos["entry"],
+                "live_pnl_pct": 0.0,
+            }
 
     return JSONResponse({
-        "status":       state["status"],
-        "balance":      state["balance"],
-        "wins":         wins,
-        "losses":       losses,
-        "total":        total,
-        "total_pnl":    state["total_pnl"],
-        "min_score":    MIN_SCORE,
+        "status":        state["status"],
+        "balance":       state["balance"],
+        "wins":          wins,
+        "losses":        losses,
+        "total":         total,
+        "total_pnl":     state["total_pnl"],
+        "min_score":     MIN_SCORE,
         "max_positions": MAX_POSITIONS,
-        "open_count":   len(state["positions"]),
-        "trend_blocks": state["trend_blocks"],
-        "score_blocks": state["score_blocks"],
-        "positions":    positions_data,
-        "last_signal":  state["last_signal"],
-        "scan_log":     state["scan_log"][:10],
+        "open_count":    len(state["positions"]),
+        "trend_blocks":  state["trend_blocks"],
+        "score_blocks":  state["score_blocks"],
+        "positions":     positions_data,
+        "last_signal":   state["last_signal"],
+        "scan_log":      state["scan_log"][:10],
         "signal_params": state["signal_params"],
-        "last_scan":    state["last_scan"],
-        "now":          int(time.time()),
+        "last_scan":     state["last_scan"],
+        "now":           int(time.time()),
     })
 
 @app.get("/api/trades")
 async def api_trades():
-    trades=await fetch_trades_from_supabase()
-    return JSONResponse(trades)
+    try:
+        trades = await asyncio.wait_for(fetch_trades_from_supabase(), timeout=4.0)
+    except Exception:
+        trades = state["trades"]  # fallback to in-memory
+    return JSONResponse(trades if isinstance(trades, list) else [])
 
 @app.get("/api/scan_log")
 async def api_scan_log():
@@ -1274,7 +1285,8 @@ body {
   <div class="slbl">System</div>
   <div class="icard">
     <div class="ir"><span class="k">Balance</span><span class="v" id="ov-bal">—</span></div>
-    <div class="ir"><span class="k">Min Score</span><span class="v"><span class="badge b-pass">70 · STRONG</span></span></div>
+    <div class="ir"><span class="k">Min Score</span><span class="v"><span class="badge b-pass" id="ov-minscore">75 · STRONG</span></span></div>
+    <div class="ir"><span class="k">Open Positions</span><span class="v" id="ov-open">—</span></div>
     <div class="ir"><span class="k">Trend Blocks</span><span class="v" id="ov-tb">—</span></div>
     <div class="ir"><span class="k">Score Blocks</span><span class="v" id="ov-sb">—</span></div>
     <div class="ir"><span class="k">Last Scan</span><span class="v" id="ov-ls">—</span></div>
@@ -1531,33 +1543,47 @@ function startRefreshBar() {
 // ── Fetch ──
 async function fetchData() {
   try {
-    const [statusRes, tradesRes] = await Promise.all([
-      fetch('/api/status'),
-      fetch('/api/trades'),
+    // Use individual fetches with timeouts so one failure doesn't block the other
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 6000);
+
+    const [statusRes, tradesRes] = await Promise.allSettled([
+      fetch('/api/status', { signal: controller.signal }),
+      fetch('/api/trades',  { signal: controller.signal }),
     ]);
-    data = await statusRes.json();
-    const trades = await tradesRes.json();
-    // Always use live Supabase trades — overrides in-memory state
-    if (Array.isArray(trades) && trades.length > 0) {
-      data.trades = trades;
+    clearTimeout(tid);
+
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+      const fresh = await statusRes.value.json();
+      data = { ...data, ...fresh };
     }
-    render();
-    startRefreshBar();
+    if (tradesRes.status === 'fulfilled' && tradesRes.value.ok) {
+      const trades = await tradesRes.value.json();
+      if (Array.isArray(trades) && trades.length > 0) {
+        data.trades = trades;
+      }
+    }
   } catch (e) {
-    console.error(e);
+    console.warn('Fetch error:', e);
+  } finally {
+    // Always render and restart bar — never stay stuck on LOADING
+    render();
     startRefreshBar();
   }
 }
 
 // ── Render ──
 function render() {
-  renderOverview();
-  renderSignal();
-  renderPosition();
-  renderScanLog();
-  renderTrades();
-  // Update status pill
-  document.getElementById('stxt').textContent = (data.status || 'unknown').toUpperCase();
+  try { renderOverview(); }   catch(e) { console.warn('renderOverview:', e); }
+  try { renderSignal(); }     catch(e) { console.warn('renderSignal:', e); }
+  try { renderPosition(); }   catch(e) { console.warn('renderPosition:', e); }
+  try { renderScanLog(); }    catch(e) { console.warn('renderScanLog:', e); }
+  try { renderTrades(); }     catch(e) { console.warn('renderTrades:', e); }
+  // Always update status pill — never stay on LOADING
+  const status = (data.status || 'connected').toUpperCase();
+  document.getElementById('stxt').textContent = status;
+  const dot = document.querySelector('.sdot');
+  if (dot) dot.style.background = status === 'RUNNING' ? 'var(--forest)' : '#aaa';
 }
 
 function fmt(n, decimals=2) {
@@ -1598,6 +1624,9 @@ function renderOverview() {
   document.getElementById('ov-aw').textContent = '+$' + fmt(avgW);
   document.getElementById('ov-al').textContent = '−$' + fmt(Math.abs(avgL));
   document.getElementById('ov-bal').textContent = '$' + fmt(data.balance || 0) + ' USDT';
+  const ms = data.min_score || 75;
+  document.getElementById('ov-minscore').textContent = ms + ' · ' + (ms >= 80 ? 'VERY STRONG' : ms >= 75 ? 'STRONG' : 'MEDIUM');
+  document.getElementById('ov-open').textContent = (data.open_count || 0) + ' / ' + (data.max_positions || 3);
   document.getElementById('ov-tb').textContent = data.trend_blocks || 0;
   document.getElementById('ov-sb').textContent = data.score_blocks || 0;
   const age = data.now && data.last_scan ? (data.now - data.last_scan) : '?';
