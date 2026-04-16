@@ -27,14 +27,16 @@ WATCHLIST = [
     "LDOUSDT","STXUSDT","FTMUSDT","GRTUSDT","SANDUSDT",
 ]
 
+MAX_POSITIONS = 3   # max concurrent open trades
+
 state = {
     "wins": 0, "losses": 0, "total_pnl": 0.0,
-    "trades": [], "position": None, "balance": 0.0,
+    "trades": [], "positions": {}, "balance": 0.0,
     "last_scan": 0, "status": "starting",
     "trend_blocks": 0, "score_blocks": 0,
     "last_signal": None,
-    "scan_log": [],        # last 10 scanned coins with full params
-    "signal_params": {},   # latest signal parameters for display
+    "scan_log": [],
+    "signal_params": {},
 }
 
 # ── BYBIT HELPERS ────────────────────────────────────────────
@@ -461,32 +463,51 @@ async def check_structure_break(symbol,pos):
 # ── SCAN LOOP ────────────────────────────────────────────────
 
 async def scan_once():
-    if state["position"]:
-        await manage_position();return
-    state["balance"]=await get_balance()
-    if state["balance"]<10:
-        print(f"Low balance:{state['balance']}");return
-    print(f"\n── Scan │ Balance:${state['balance']:.2f} ──")
+    # ── Monitor all open positions in parallel ──
+    if state["positions"]:
+        await asyncio.gather(*[
+            manage_one_position(sym, pos)
+            for sym, pos in list(state["positions"].items())
+        ])
+
+    # ── If slots available, scan for new signals ──
+    open_count = len(state["positions"])
+    if open_count >= MAX_POSITIONS:
+        print(f"\n── Max positions ({MAX_POSITIONS}) open — monitoring only ──")
+        return
+
+    state["balance"] = await get_balance()
+    if state["balance"] < 10:
+        print(f"Low balance: {state['balance']}"); return
+
+    slots = MAX_POSITIONS - open_count
+    print(f"\n── Scan │ Balance:${state['balance']:.2f} │ "
+          f"Open:{open_count}/{MAX_POSITIONS} │ Slots:{slots} ──")
+
+    new_trades = 0
     for symbol in WATCHLIST:
-        if state["position"]:break
+        if new_trades >= slots:
+            break
+        if symbol in state["positions"]:
+            continue   # already in this coin
         try:
-            await scan_symbol(symbol)
+            entered = await scan_symbol(symbol)
+            if entered:
+                new_trades += 1
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"Scan err {symbol}:{e}")
+            print(f"Scan err {symbol}: {e}")
 
 async def scan_symbol(symbol):
+    """Returns True if a trade was entered"""
     ticker=await get_ticker(symbol)
-    if not ticker:return
+    if not ticker: return False
     price=float(ticker.get("lastPrice",0))
     price24=float(ticker.get("prevPrice24h",price) or price)
     change=(price-price24)/price24*100 if price24>0 else 0
     vol=float(ticker.get("volume24h",0))
-    if vol<500_000 or abs(change)>15:return
+    if vol<500_000 or abs(change)>15: return False
 
-    # ── 24h change filter — only trade FRESH moves ───────────
-    # Already up >5%  → long exhausted, skip
-    # Already down >5% → short exhausted, skip
     skip_long  = change >  5.0
     skip_short = change < -5.0
 
@@ -498,12 +519,12 @@ async def scan_symbol(symbol):
         gate_ok,gate_info=await trend_gate(symbol,direction)
         if not gate_ok:
             state["trend_blocks"]+=1
-            print(f"  BLOCKED {symbol} {direction.upper()} | {gate_info.get('reason','')}");continue
+            print(f"  BLOCKED {symbol} {direction.upper()} | {gate_info.get('reason','')}"); continue
         score,label,details=await score_signal(symbol,direction)
         print(f"  SCORED {symbol} {direction.upper()} | {score} ({label})")
         if score>best_score:
-            best_score=score;best_dir=direction
-            best_gate=gate_info;best_details=details;best_label=label
+            best_score=score; best_dir=direction
+            best_gate=gate_info; best_details=details; best_label=label
 
     scan_entry={"symbol":symbol,"direction":best_dir or "none","price":round(price,4),
                 "change":round(change,2),"vol":round(vol/1e6,1),
@@ -513,12 +534,12 @@ async def scan_symbol(symbol):
                 "time":int(time.time())}
 
     if not best_dir:
-        _add_scan_log(scan_entry);return
+        _add_scan_log(scan_entry); return False
 
-    if best_score<MIN_SCORE:
+    if best_score < MIN_SCORE:
         state["score_blocks"]+=1
         _add_scan_log(scan_entry)
-        print(f"  BLOCKED {symbol} | Best score {best_score}<{MIN_SCORE}");return
+        print(f"  BLOCKED {symbol} | Score {best_score}<{MIN_SCORE}"); return False
 
     scan_entry["blocked_by"]=None
     _add_scan_log(scan_entry)
@@ -528,65 +549,95 @@ async def scan_symbol(symbol):
     state["signal_params"]={"symbol":symbol,"direction":best_dir,"score":best_score,
                              "label":best_label,"gate":best_gate,"details":best_details}
     await enter_trade(symbol,best_dir,best_score,best_label,price)
+    return True
 
 def _add_scan_log(entry):
     state["scan_log"].insert(0,entry)
     state["scan_log"]=state["scan_log"][:20]
 
-async def get_qty_step(symbol):
-    """Fetch Bybit required qty step for this symbol"""
+async def get_instrument_info(symbol):
+    """
+    Fetch qty step AND min order qty from Bybit.
+    Returns (qty_step, min_qty)
+    """
     try:
-        r=await _get("/v5/market/instruments-info",{"category":"linear","symbol":symbol})
-        info=r.get("result",{}).get("list",[])
+        r = await _get("/v5/market/instruments-info",
+                       {"category": "linear", "symbol": symbol})
+        info = r.get("result", {}).get("list", [])
         if info:
-            step=info[0].get("lotSizeFilter",{}).get("qtyStep","0.001")
-            return float(step)
+            lot = info[0].get("lotSizeFilter", {})
+            step    = float(lot.get("qtyStep",    "0.001"))
+            min_qty = float(lot.get("minOrderQty","0.001"))
+            return step, min_qty
     except Exception as e:
-        print(f"Step size err {symbol}:{e}")
-    return 0.001
+        print(f"Instrument info err {symbol}: {e}")
+    return 0.001, 0.001
 
-def round_qty(qty,step):
+def round_qty(qty, step):
     """Round qty DOWN to nearest valid step"""
     import math
-    if step<=0:return round(qty,3)
-    decimals=max(0,-int(math.floor(math.log10(step))))
-    return round(math.floor(qty/step)*step,decimals)
+    if step <= 0: return round(qty, 3)
+    decimals = max(0, -int(math.floor(math.log10(step))))
+    return round(math.floor(qty / step) * step, decimals)
 
 async def enter_trade(symbol, direction, score, label, price):
-    sizing = get_sizing(score, state["balance"])
+    """
+    Position sizing with min-qty fallback:
+    1. Try slot-based size (balance / MAX_POSITIONS)
+    2. If resulting qty < min_qty, try using full available balance
+    3. If still < min_qty, skip — coin too expensive for current balance
+    """
+    import math
+
+    step, min_qty = await get_instrument_info(symbol)
     sl_data = get_sl(score, price, direction)
 
-    raw_qty = sizing["size"] * LEVERAGE / price
-    step    = await get_qty_step(symbol)
-    qty     = round_qty(raw_qty, step)
+    def calc_qty(balance_to_use):
+        sizing  = get_sizing(score, balance_to_use)
+        raw_qty = sizing["size"] * LEVERAGE / price
+        return round_qty(raw_qty, step), sizing["size"]
 
-    print(f"  QTY {symbol}: raw={raw_qty:.6f} step={step} final={qty}")
-    if qty <= 0 or qty < step:
-        print(f"  QTY too small {symbol}: {qty} < step {step}"); return
+    # ── Try slot-based sizing first ──
+    per_slot_balance = state["balance"] / MAX_POSITIONS
+    qty, used_size   = calc_qty(per_slot_balance)
 
-    # Place order with SL only — no TP set on exchange
-    # Exit is handled dynamically by momentum exhaustion logic
+    if qty < min_qty:
+        # ── Fallback: try full balance ──
+        print(f"  QTY FALLBACK {symbol}: slot qty={qty} < min={min_qty} "
+              f"— trying full balance ${state['balance']:.2f}")
+        qty, used_size = calc_qty(state["balance"])
+
+        if qty < min_qty:
+            # ── Skip — even full balance isn't enough ──
+            print(f"  SKIP {symbol}: qty={qty} still < min={min_qty} "
+                  f"(price ${price:.2f} too high for balance ${state['balance']:.2f})")
+            return False
+
+        print(f"  FULL BALANCE used for {symbol}: qty={qty} "
+              f"(${used_size:.2f} of ${state['balance']:.2f})")
+
+    print(f"  ORDER {symbol}: qty={qty} step={step} min={min_qty} "
+          f"size=${used_size:.2f} SL={sl_data['sl']} ({sl_data['sl_pct']}%)")
+
     resp = await place_order_sl_only(symbol, direction, qty, sl_data["sl"])
     if not resp or resp.get("retCode") != 0:
-        print(f"Order failed {symbol}: {resp}"); return
+        print(f"  Order failed {symbol}: {resp}"); return False
 
-    print(f"  ORDER {symbol} {direction.upper()} qty={qty} "
-          f"SL={sl_data['sl']} ({sl_data['sl_pct']}%) — dynamic exit active")
-
-    state["position"] = {
-        "symbol":    symbol,
-        "side":      direction,
-        "entry":     price,
-        "qty":       qty,
+    state["positions"][symbol] = {
+        "symbol":        symbol,
+        "side":          direction,
+        "entry":         price,
+        "qty":           qty,
         "qty_remaining": qty,
-        "score":     score,
-        "label":     label,
-        "sl":        sl_data["sl"],
-        "sl_pct":    sl_data["sl_pct"],
-        "peak_pnl":  0.0,   # track highest profit seen
-        "open_time": int(time.time()),
+        "score":         score,
+        "label":         label,
+        "sl":            sl_data["sl"],
+        "sl_pct":        sl_data["sl_pct"],
+        "peak_pnl":      0.0,
+        "open_time":     int(time.time()),
     }
-    await save_to_supabase(state["position"], "open", price)
+    await save_to_supabase(state["positions"][symbol], "open", price)
+    return True
 
 async def place_order_sl_only(symbol, side, qty, sl):
     """Place market order with SL only — no fixed TP"""
@@ -615,21 +666,17 @@ async def place_order_sl_only(symbol, side, qty, sl):
         print(f"Position check err {symbol}:{e}")
         return True  # assume open if error
 
-async def manage_position():
+async def manage_one_position(symbol, pos):
     """
-    Monitor open position every 30 seconds.
+    Monitor one open position.
     Two exits only:
-      1. Hard SL — set on Bybit at entry, triggers automatically
-      2. Dynamic exit — momentum exhaustion detected here
-    No fixed TPs. Bot rides the move until it dies.
+      1. Hard SL — backup check in case Bybit SL didn't fire
+      2. Dynamic exit — momentum exhaustion
     Also detects manual closes on Bybit.
     """
-    pos = state["position"]
-    if not pos: return
+    side = pos["side"]; entry = pos["entry"]
 
-    symbol = pos["symbol"]; side = pos["side"]; entry = pos["entry"]
-
-    # ── Check if manually closed on Bybit ──
+    # ── Detect manual close ──
     still_open = await check_position_still_open(symbol, side)
     if not still_open:
         ticker = await get_ticker(symbol)
@@ -647,7 +694,6 @@ async def manage_position():
 
     pnl = (price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
 
-    # Track peak profit for display
     if pnl > pos.get("peak_pnl", 0):
         pos["peak_pnl"] = round(pnl, 3)
 
@@ -658,7 +704,7 @@ async def manage_position():
             return False
         return True
 
-    # ── Hard SL check (backup in case Bybit SL didn't fire) ──
+    # ── Hard SL backup ──
     sl_hit = (side=="long" and price <= pos["sl"]) or \
              (side=="short" and price >= pos["sl"])
     if sl_hit:
@@ -668,7 +714,7 @@ async def manage_position():
             await record_close(pos, price, "loss", "SL")
             return
 
-    # ── Dynamic exit: momentum exhaustion ──
+    # ── Dynamic exit ──
     should_exit, reason = await check_momentum_exit(symbol, pos)
     if should_exit:
         resp = await close_full(symbol, pos["qty_remaining"], side)
@@ -678,17 +724,15 @@ async def manage_position():
             await record_close(pos, price, result, "DynamicExit")
             return
 
-    # ── Still holding ──
     print(f"  HOLDING {symbol} | {side.upper()} | "
-          f"PnL: {pnl:+.2f}% | Peak: {pos.get('peak_pnl',0):+.2f}% | "
-          f"SL: ${pos['sl']:.4f}")
+          f"PnL:{pnl:+.2f}% | Peak:{pos.get('peak_pnl',0):+.2f}% | SL:${pos['sl']:.4f}")
 
 async def record_close(pos, exit_price, result, exit_type):
-    entry = pos["entry"]; side = pos["side"]
+    entry = pos["entry"]; side = pos["side"]; symbol = pos["symbol"]
     pnl_pct = (exit_price-entry)/entry*100 if side=="long" else (entry-exit_price)/entry*100
     pnl_usd = pos["qty"] * entry * (pnl_pct/100) * LEVERAGE
     trade = {
-        "symbol":     pos["symbol"],
+        "symbol":     symbol,
         "direction":  side,
         "result":     result,
         "entry":      entry,
@@ -707,8 +751,10 @@ async def record_close(pos, exit_price, result, exit_type):
     if result == "win": state["wins"]  += 1
     else:               state["losses"] += 1
     state["total_pnl"] += pnl_usd
-    state["position"]   = None
-    print(f"  CLOSED {result.upper()} | {exit_type} | {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | Peak was {pos.get('peak_pnl',0):+.2f}%")
+    # Remove from positions dict
+    state["positions"].pop(symbol, None)
+    print(f"  CLOSED {symbol} {result.upper()} | {exit_type} | "
+          f"{pnl_pct:+.2f}% (${pnl_usd:+.2f}) | Peak:{pos.get('peak_pnl',0):+.2f}%")
     await save_to_supabase(trade, result, exit_price)
 
 # ── SUPABASE ─────────────────────────────────────────────────
@@ -788,27 +834,43 @@ async def startup():
 
 @app.get("/api/status")
 async def api_status():
-    pos=state["position"]
-    wins=state["wins"];losses=state["losses"];total=wins+losses
-    # live price for open position
-    pos_data=None
-    if pos:
-        try:
-            tk=await get_ticker(pos["symbol"])
-            live_price=float(tk.get("lastPrice",pos["entry"]))
-            pnl_pct=(live_price-pos["entry"])/pos["entry"]*100 if pos["side"]=="long" else (pos["entry"]-live_price)/pos["entry"]*100
-            pos_data={**pos,"live_price":round(live_price,6),"live_pnl_pct":round(pnl_pct,3)}
-        except:
-            pos_data=pos
+    wins=state["wins"]; losses=state["losses"]; total=wins+losses
+
+    # Fetch live prices for all open positions in parallel
+    positions_data = {}
+    if state["positions"]:
+        tickers = await asyncio.gather(*[
+            get_ticker(sym) for sym in state["positions"]
+        ])
+        for sym, tk in zip(state["positions"].keys(), tickers):
+            pos = state["positions"][sym]
+            try:
+                live_price = float(tk.get("lastPrice", pos["entry"]))
+                pnl_pct = (live_price-pos["entry"])/pos["entry"]*100 if pos["side"]=="long" \
+                          else (pos["entry"]-live_price)/pos["entry"]*100
+                positions_data[sym] = {**pos, "live_price": round(live_price,6),
+                                              "live_pnl_pct": round(pnl_pct,3)}
+            except:
+                positions_data[sym] = pos
+
     return JSONResponse({
-        "status":state["status"],"balance":state["balance"],
-        "wins":wins,"losses":losses,"total":total,
-        "total_pnl":state["total_pnl"],"min_score":MIN_SCORE,
-        "trend_blocks":state["trend_blocks"],"score_blocks":state["score_blocks"],
-        "position":pos_data,"last_signal":state["last_signal"],
-        "scan_log":state["scan_log"][:10],
-        "signal_params":state["signal_params"],
-        "last_scan":state["last_scan"],"now":int(time.time()),
+        "status":       state["status"],
+        "balance":      state["balance"],
+        "wins":         wins,
+        "losses":       losses,
+        "total":        total,
+        "total_pnl":    state["total_pnl"],
+        "min_score":    MIN_SCORE,
+        "max_positions": MAX_POSITIONS,
+        "open_count":   len(state["positions"]),
+        "trend_blocks": state["trend_blocks"],
+        "score_blocks": state["score_blocks"],
+        "positions":    positions_data,
+        "last_signal":  state["last_signal"],
+        "scan_log":     state["scan_log"][:10],
+        "signal_params": state["signal_params"],
+        "last_scan":    state["last_scan"],
+        "now":          int(time.time()),
     })
 
 @app.get("/api/trades")
@@ -1663,66 +1725,56 @@ function renderSignal() {
 
 // ── Position ──
 function renderPosition() {
-  const pos = data.position;
+  const positions = data.positions || {};
   const el = document.getElementById('pos-content');
-  if (!pos) {
-    el.innerHTML = `<div class="no-pos"><div class="no-pos-icon">◎</div><div class="no-pos-txt">No open position</div></div>`;
+  const keys = Object.keys(positions);
+
+  if (!keys.length) {
+    el.innerHTML = `<div class="no-pos"><div class="no-pos-icon">◎</div><div class="no-pos-txt">No open positions — scanning...</div></div>`;
     return;
   }
-  const lp = pos.live_price || pos.entry;
-  const pnl = pos.live_pnl_pct || 0;
-  const pnlCol = pnl >= 0 ? 'var(--green2)' : 'var(--red2)';
-  const isLong = pos.side === 'long';
-  const tp1c = pos.tp1_hit ? 'tp-hit' : '';
-  const tp2c = pos.tp2_hit ? 'tp-hit' : '';
-  const line1c = pos.tp1_hit ? 'tp-hit-line' : '';
-  const line2c = pos.tp2_hit ? 'tp-hit-line' : '';
-  const dur = data.now ? Math.floor((data.now - (pos.open_time||data.now)) / 60) : 0;
 
-  el.innerHTML = `
-  <div class="pos-card">
-    <div class="pos-hdr">
-      <div>
-        <div class="pos-sym">${pos.symbol.replace('USDT','')}<span>/USDT</span></div>
-        <div class="pos-meta">
-          <span class="badge ${isLong?'b-long':'b-short'}">${pos.side.toUpperCase()}</span>
-          <span class="badge b-neu">${dur}m open</span>
-          ${pos.be_moved ? '<span class="badge b-pass">BE ✓</span>' : ''}
+  el.innerHTML = keys.map(sym => {
+    const pos = positions[sym];
+    const lp = pos.live_price || pos.entry;
+    const pnl = pos.live_pnl_pct || 0;
+    const pnlCol = pnl >= 0 ? 'var(--green2)' : 'var(--red2)';
+    const isLong = pos.side === 'long';
+    const dur = data.now ? Math.floor((data.now - (pos.open_time||data.now)) / 60) : 0;
+
+    return `
+    <div class="pos-card" style="margin-bottom:12px">
+      <div class="pos-hdr">
+        <div>
+          <div class="pos-sym">${pos.symbol.replace('USDT','')}<span>/USDT</span></div>
+          <div class="pos-meta">
+            <span class="badge ${isLong?'b-long':'b-short'}">${pos.side.toUpperCase()}</span>
+            <span class="badge b-neu">${dur}m open</span>
+          </div>
+        </div>
+        <div>
+          <div class="pos-score-big">${pos.score}</div>
+          <div class="pos-score-sub">${pos.label}</div>
         </div>
       </div>
-      <div>
-        <div class="pos-score-big">${pos.score}</div>
-        <div class="pos-score-sub">${pos.label}</div>
+
+      <div class="pos-metrics">
+        <div class="pm"><span class="pm-k">Entry</span><span class="pm-v">$${fmt(pos.entry,4)}</span></div>
+        <div class="pm"><span class="pm-k">Price</span><span class="pm-v" style="color:${pnlCol}">$${fmt(lp,4)}</span></div>
+        <div class="pm"><span class="pm-k">P&L</span><span class="pm-v" style="color:${pnlCol}">${pnl>=0?'+':''}${fmt(pnl,2)}%</span></div>
+        <div class="pm"><span class="pm-k">SL</span><span class="pm-v" style="color:var(--red2)">$${fmt(pos.sl,4)} (−${pos.sl_pct}%)</span></div>
+        ${pos.peak_pnl > 0 ? `<div class="pm"><span class="pm-k">Peak</span><span class="pm-v" style="color:var(--green2)">+${fmt(pos.peak_pnl,2)}%</span></div>` : ''}
+        <div class="pm"><span class="pm-k">Qty</span><span class="pm-v">${pos.qty}</span></div>
       </div>
-    </div>
 
-    <div class="pos-metrics">
-      <div class="pm"><span class="pm-k">Entry</span><span class="pm-v">$${fmt(pos.entry,4)}</span></div>
-      <div class="pm"><span class="pm-k">Mark Price</span><span class="pm-v" style="color:${pnlCol}">$${fmt(lp,4)}</span></div>
-      <div class="pm"><span class="pm-k">Unrealised P&L</span><span class="pm-v" style="color:${pnlCol}">${pnl>=0?'+':''}${fmt(pnl,2)}%</span></div>
-      <div class="pm"><span class="pm-k">Stop Loss</span><span class="pm-v" style="color:var(--red2)">$${fmt(pos.sl,4)}</span></div>
-      <div class="pm"><span class="pm-k">Qty</span><span class="pm-v">${pos.qty}</span></div>
-      <div class="pm"><span class="pm-k">Remaining</span><span class="pm-v">${pos.qty_remaining}</span></div>
-    </div>
-
-    <div style="background:rgba(61,255,160,0.06);border:1px solid rgba(61,255,160,0.15);border-radius:10px;padding:12px;margin-top:12px">
-      <div style="font-size:10px;color:var(--ink3);font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">Exit Strategy</div>
-      <div style="font-size:13px;color:#aaa;line-height:1.6">
-        <span style="color:var(--green2)">●</span> Dynamic exit — watching for exhaustion<br>
-        <span style="color:#555">●</span> Shrinking candles + CVD flat = exit<br>
-        <span style="color:var(--red2)">●</span> Hard SL at $${fmt(pos.sl,4)} (−${pos.sl_pct}%)
+      <div style="background:rgba(61,255,160,0.05);border:1px solid rgba(61,255,160,0.12);border-radius:8px;padding:10px;margin-top:10px;font-size:12px;color:#888;line-height:1.6">
+        <span style="color:var(--green2)">●</span> Watching for exhaustion
+        &nbsp;·&nbsp;
+        <span style="color:var(--red2)">●</span> SL at $${fmt(pos.sl,4)}
       </div>
-      ${pos.peak_pnl > 0 ? `<div style="margin-top:8px;font-size:12px;color:var(--green2);font-family:var(--mono)">Peak profit seen: +${fmt(pos.peak_pnl,2)}%</div>` : ''}
-    </div>
-  </div>
-
-  <div class="slbl" style="margin-top:20px">Entry Signal Params</div>
-  <div class="icard">
-    <div class="ir"><span class="k">Score</span><span class="v">${pos.score} · ${pos.label}</span></div>
-    <div class="ir"><span class="k">Direction</span><span class="v"><span class="badge ${isLong?'b-long':'b-short'}">${pos.side.toUpperCase()}</span></span></div>
-    <div class="ir"><span class="k">Hard SL</span><span class="v" style="color:var(--red2)">−${pos.sl_pct}%</span></div>
-    <div class="ir"><span class="k">Exit Type</span><span class="v" style="color:var(--green2)">Momentum Exhaustion</span></div>
-  </div>`;
+    </div>`;
+  }).join('');
+}
 }
 
 // ── Scan Log ──
