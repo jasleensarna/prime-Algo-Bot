@@ -910,11 +910,45 @@ async def api_trades():
 async def api_scan_log():
     return JSONResponse(state["scan_log"])
 
-# ── DASHBOARD (Single Page App — polls /api/status) ──────────
+# ── DASHBOARD ────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return HTMLResponse(DASHBOARD_HTML)
+    # Inject current state directly into the page
+    # This means data shows immediately on load — no fetch needed
+    try:
+        balance_str = f"${state['balance']:.2f}" if state['balance'] > 0 else "—"
+    except:
+        balance_str = "—"
+
+    injected = f"""
+<script>
+// Pre-loaded server data — shows immediately without waiting for fetch
+let data = {json.dumps({
+    "status":        state["status"],
+    "balance":       state["balance"],
+    "wins":          state["wins"],
+    "losses":        state["losses"],
+    "total":         state["wins"] + state["losses"],
+    "total_pnl":     state["total_pnl"],
+    "min_score":     MIN_SCORE,
+    "max_positions": MAX_POSITIONS,
+    "open_count":    len(state["positions"]),
+    "trend_blocks":  state["trend_blocks"],
+    "score_blocks":  state["score_blocks"],
+    "positions":     {},
+    "last_signal":   state["last_signal"],
+    "scan_log":      state["scan_log"][:10],
+    "signal_params": state["signal_params"],
+    "last_scan":     state["last_scan"],
+    "now":           int(time.time()),
+    "trades":        state["trades"][-20:],
+})};
+</script>"""
+    return HTMLResponse(DASHBOARD_HTML.replace(
+        "let data = {};",
+        injected
+    ))
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
