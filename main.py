@@ -63,24 +63,25 @@ async def _post(path,body):
         r=await c.post(BASE+path,json=body); return r.json()
 
 async def get_balance():
-    # Try UNIFIED first, then CONTRACT (Bybit has both account types)
-    for acct_type in ["UNIFIED", "CONTRACT"]:
-        try:
-            r=await _get("/v5/account/wallet-balance",{"accountType":acct_type},signed=True)
-            ret_code=r.get("retCode",999)
-            if ret_code!=0:
-                print(f"Balance {acct_type} retCode={ret_code} msg={r.get('retMsg','')}")
-                continue
-            coins=r.get("result",{}).get("list",[{}])[0].get("coin",[])
-            for c in coins:
+    try:
+        r=await _get("/v5/account/wallet-balance",{"accountType":"UNIFIED"},signed=True)
+        if r.get("retCode")==0:
+            account=r["result"]["list"][0]
+            # Use account-level totalAvailableBalance first (most reliable)
+            bal=float(account.get("totalAvailableBalance") or 0)
+            if bal>0:
+                print(f"Balance: ${bal:.2f} (account level)")
+                return bal
+            # Fallback: find USDT coin entry
+            for c in account.get("coin",[]):
                 if c["coin"]=="USDT":
-                    val=float(c.get("availableToWithdraw") or c.get("walletBalance") or 0)
+                    val=float(c.get("walletBalance") or c.get("equity") or 0)
                     if val>0:
-                        print(f"Balance found: ${val:.2f} ({acct_type})")
+                        print(f"Balance: ${val:.2f} (USDT coin)")
                         return val
-        except Exception as e:
-            print(f"Balance err ({acct_type}): {e}")
-    print("Balance: could not fetch from either account type")
+        print(f"Balance API retCode={r.get('retCode')} msg={r.get('retMsg')}")
+    except Exception as e:
+        print(f"Balance err: {e}")
     return 0.0
 
 async def get_klines(symbol,interval="5",limit=30):
