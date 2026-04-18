@@ -13,7 +13,7 @@ app = FastAPI()
 API_KEY       = os.getenv("BYBIT_API_KEY", "")
 API_SECRET    = os.getenv("BYBIT_API_SECRET", "")
 BASE_URL      = "https://api.bybit.com"
-MIN_SCORE     = 70
+MIN_SCORE     = 75
 LEVERAGE      = 2
 SCAN_INTERVAL = 30
 
@@ -1623,49 +1623,69 @@ function badge(ok, yesText='PASS', noText='FAIL') {
 
 // ── Overview ──
 function renderOverview() {
-  const wins = data.wins || 0;
+  const wins   = data.wins   || 0;
   const losses = data.losses || 0;
-  const total = wins + losses;
-  const wr = total > 0 ? (wins/total*100).toFixed(0) : '0';
-  const pnl = data.total_pnl || 0;
+  const total  = wins + losses;
+  const wr     = total > 0 ? (wins/total*100).toFixed(0) : '0';
+  const pnl    = data.total_pnl || 0;
   const trades = data.trades || [];
   const wTrades = trades.filter(t => (t.result||'').toLowerCase() === 'win');
   const lTrades = trades.filter(t => (t.result||'').toLowerCase() === 'loss');
   const avgW = wTrades.length ? wTrades.reduce((s,t)=>s+(t.pnl||0),0)/wTrades.length : 0;
   const avgL = lTrades.length ? lTrades.reduce((s,t)=>s+(t.pnl||0),0)/lTrades.length : 0;
 
-  const pnlEl = document.getElementById('ov-pnl');
-  pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + fmt(pnl);
-  pnlEl.style.color = pnlColor(pnl);
-  const pnlCard = document.getElementById('pnl-card');
-  pnlCard.querySelector('.sc-top').style.background = pnl >= 0 ? 'var(--green3)' : 'var(--red2)';
+  // Helper — safe set, never throws
+  function set(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  }
+  function setHtml(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = val;
+  }
+  function setStyle(id, prop, val) {
+    const el = document.getElementById(id);
+    if (el) el.style[prop] = val;
+  }
 
-  document.getElementById('ov-trades').textContent = total + ' trades closed';
-  document.getElementById('ov-wr').textContent = wr + '%';
-  document.getElementById('ov-wl').textContent = wins + 'W / ' + losses + 'L';
-  document.getElementById('ov-aw').textContent = '+$' + fmt(avgW);
-  document.getElementById('ov-al').textContent = '−$' + fmt(Math.abs(avgL));
-  document.getElementById('ov-bal').textContent = data.balance > 0 ? '$' + fmt(data.balance, 2) + ' USDT' : '—';
+  // P&L card
+  set('ov-pnl', (pnl >= 0 ? '+' : '') + '$' + fmt(pnl));
+  setStyle('ov-pnl', 'color', pnl >= 0 ? 'var(--green2)' : 'var(--red2)');
+  const pnlCard = document.getElementById('pnl-card');
+  if (pnlCard) {
+    const top = pnlCard.querySelector('.sc-top');
+    if (top) top.style.background = pnl >= 0 ? 'var(--green3)' : 'var(--red2)';
+  }
+
+  set('ov-trades', total + ' trades closed');
+  set('ov-wr',     wr + '%');
+  set('ov-wl',     wins + 'W / ' + losses + 'L');
+  set('ov-aw',     '+$' + fmt(avgW));
+  set('ov-al',     '−$' + fmt(Math.abs(avgL)));
+
+  // System section
+  set('ov-bal',  data.balance > 0 ? '$' + fmt(data.balance, 2) + ' USDT' : '—');
   const ms = data.min_score || 75;
-  document.getElementById('ov-minscore').textContent = ms + ' · ' + (ms >= 80 ? 'VERY STRONG' : ms >= 75 ? 'STRONG' : 'MEDIUM');
-  document.getElementById('ov-open').textContent = data.open_count !== undefined ? (data.open_count + ' / ' + (data.max_positions || 3)) : '—';
-  document.getElementById('ov-tb').textContent = data.trend_blocks !== undefined ? data.trend_blocks : '—';
-  document.getElementById('ov-sb').textContent = data.score_blocks !== undefined ? data.score_blocks : '—';
+  set('ov-minscore', ms + ' · ' + (ms >= 80 ? 'VERY STRONG' : ms >= 75 ? 'STRONG' : 'MEDIUM'));
+  set('ov-open', data.open_count !== undefined ? (data.open_count + ' / ' + (data.max_positions || 3)) : '—');
+  set('ov-tb',   data.trend_blocks !== undefined ? data.trend_blocks : '—');
+  set('ov-sb',   data.score_blocks !== undefined ? data.score_blocks : '—');
   const age = (data.now && data.last_scan && data.last_scan > 0) ? (data.now - data.last_scan) : null;
-  document.getElementById('ov-ls').textContent = age !== null ? age + 's ago' : '—';
+  set('ov-ls',   age !== null ? age + 's ago' : '—');
 
   // Last signal card
   const ls = data.last_signal;
   const lsCard = document.getElementById('last-sig-card');
-  if (ls) {
-    const sigAge = data.now ? (data.now - ls.time) : '?';
-    const dir = ls.direction === 'long' ? '<span class="badge b-long">LONG</span>' : '<span class="badge b-short">SHORT</span>';
+  if (lsCard && ls) {
+    const sigAge = data.now ? Math.floor((data.now - ls.time) / 60) : '?';
+    const dir = ls.direction === 'long'
+      ? '<span class="badge b-long">LONG</span>'
+      : '<span class="badge b-short">SHORT</span>';
     lsCard.innerHTML = `
       <div class="ir"><span class="k">Symbol</span><span class="v">${ls.symbol}</span></div>
       <div class="ir"><span class="k">Direction</span><span class="v">${dir}</span></div>
       <div class="ir"><span class="k">Score</span><span class="v" style="color:var(--green2);font-weight:600">${ls.score} · ${ls.label}</span></div>
-      <div class="ir"><span class="k">Age</span><span class="v">${sigAge}s ago</span></div>
-    `;
+      <div class="ir"><span class="k">Age</span><span class="v">${sigAge}m ago</span></div>`;
   }
 }
 
@@ -1923,8 +1943,14 @@ function renderTrades() {
   }).join('');
 }
 
-// ── Start ──
-fetchData();
+// ── Start — wait for DOM to be fully ready ──
+document.addEventListener('DOMContentLoaded', () => {
+  fetchData();
+});
+// Fallback if DOMContentLoaded already fired
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  fetchData();
+}
 </script>
 </body></html>
 """
