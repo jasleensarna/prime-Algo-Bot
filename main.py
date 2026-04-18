@@ -34,9 +34,8 @@ state = {
     "trades": [], "positions": {}, "balance": 0.0,
     "last_scan": 0, "status": "starting",
     "trend_blocks": 0, "score_blocks": 0,
-    "last_signal": None,
-    "scan_log": [],
-    "signal_params": {},
+    "last_signal": None, "scan_log": [],
+    "signal_params": {}, "start_time": int(time.time()),
 }
 
 # ── BYBIT HELPERS ────────────────────────────────────────────
@@ -817,13 +816,20 @@ async def fetch_trades_from_supabase():
 async def bot_loop():
     print("APEX Pro v2.0 starting...")
     await load_from_supabase()
-    state["status"]="running"
+    # Fetch balance immediately so dashboard shows it right away
+    try:
+        state["balance"] = await get_balance()
+        print(f"Balance on startup: ${state['balance']:.2f}")
+    except Exception as e:
+        print(f"Startup balance err: {e}")
+    state["status"] = "running"
+    state["last_scan"] = int(time.time())
     while True:
         try:
-            state["last_scan"]=int(time.time())
+            state["last_scan"] = int(time.time())
             await scan_once()
         except Exception as e:
-            print(f"Loop err:{e}")
+            print(f"Loop err: {e}")
         await asyncio.sleep(SCAN_INTERVAL)
 
 @app.on_event("startup")
@@ -879,6 +885,17 @@ async def api_status():
         "signal_params": state["signal_params"],
         "last_scan":     state["last_scan"],
         "now":           int(time.time()),
+    })
+
+@app.get("/api/health")
+async def api_health():
+    """Quick health check — always returns instantly, no external calls"""
+    return JSONResponse({
+        "ok": True,
+        "status": state["status"],
+        "balance": state["balance"],
+        "positions": len(state["positions"]),
+        "uptime": int(time.time()) - state.get("start_time", int(time.time())),
     })
 
 @app.get("/api/trades")
@@ -1542,10 +1559,10 @@ function startRefreshBar() {
 
 // ── Fetch ──
 async function fetchData() {
+  const pill = document.getElementById('stxt');
   try {
-    // Use individual fetches with timeouts so one failure doesn't block the other
     const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 6000);
+    const tid = setTimeout(() => controller.abort(), 8000);
 
     const [statusRes, tradesRes] = await Promise.allSettled([
       fetch('/api/status', { signal: controller.signal }),
@@ -1556,7 +1573,13 @@ async function fetchData() {
     if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
       const fresh = await statusRes.value.json();
       data = { ...data, ...fresh };
+    } else {
+      // Show what went wrong
+      const reason = statusRes.reason || (statusRes.value && statusRes.value.status);
+      console.warn('Status fetch failed:', reason);
+      if (pill) pill.textContent = 'API ERROR ' + (reason || '');
     }
+
     if (tradesRes.status === 'fulfilled' && tradesRes.value.ok) {
       const trades = await tradesRes.value.json();
       if (Array.isArray(trades) && trades.length > 0) {
@@ -1564,9 +1587,8 @@ async function fetchData() {
       }
     }
   } catch (e) {
-    console.warn('Fetch error:', e);
+    console.warn('Fetch error:', e.message);
   } finally {
-    // Always render and restart bar — never stay stuck on LOADING
     render();
     startRefreshBar();
   }
@@ -1623,14 +1645,14 @@ function renderOverview() {
   document.getElementById('ov-wl').textContent = wins + 'W / ' + losses + 'L';
   document.getElementById('ov-aw').textContent = '+$' + fmt(avgW);
   document.getElementById('ov-al').textContent = '−$' + fmt(Math.abs(avgL));
-  document.getElementById('ov-bal').textContent = '$' + fmt(data.balance || 0) + ' USDT';
+  document.getElementById('ov-bal').textContent = data.balance > 0 ? '$' + fmt(data.balance, 2) + ' USDT' : '—';
   const ms = data.min_score || 75;
   document.getElementById('ov-minscore').textContent = ms + ' · ' + (ms >= 80 ? 'VERY STRONG' : ms >= 75 ? 'STRONG' : 'MEDIUM');
-  document.getElementById('ov-open').textContent = (data.open_count || 0) + ' / ' + (data.max_positions || 3);
-  document.getElementById('ov-tb').textContent = data.trend_blocks || 0;
-  document.getElementById('ov-sb').textContent = data.score_blocks || 0;
-  const age = data.now && data.last_scan ? (data.now - data.last_scan) : '?';
-  document.getElementById('ov-ls').textContent = age + 's ago';
+  document.getElementById('ov-open').textContent = data.open_count !== undefined ? (data.open_count + ' / ' + (data.max_positions || 3)) : '—';
+  document.getElementById('ov-tb').textContent = data.trend_blocks !== undefined ? data.trend_blocks : '—';
+  document.getElementById('ov-sb').textContent = data.score_blocks !== undefined ? data.score_blocks : '—';
+  const age = (data.now && data.last_scan && data.last_scan > 0) ? (data.now - data.last_scan) : null;
+  document.getElementById('ov-ls').textContent = age !== null ? age + 's ago' : '—';
 
   // Last signal card
   const ls = data.last_signal;
