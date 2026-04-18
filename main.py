@@ -1541,24 +1541,27 @@ function toggleGroup(hdr) {
 function startRefreshBar() {
   countdown = 15;
   const bar = document.getElementById('rbar');
-  bar.style.width = '0%';
+  if (bar) bar.style.width = '0%';
   clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
     countdown--;
     const pct = ((15 - countdown) / 15) * 100;
-    bar.style.width = pct + '%';
+    if (bar) bar.style.width = pct + '%';
     const cd = document.getElementById('sig-countdown');
     if (cd) cd.textContent = 'Next refresh in ' + countdown + 's';
     if (countdown <= 0) {
       clearInterval(refreshTimer);
-      bar.style.width = '100%';
+      if (bar) bar.style.width = '100%';
       fetchData();
     }
   }, 1000);
 }
 
 // ── Fetch ──
+let fetching = false;
 async function fetchData() {
+  if (fetching) return;
+  fetching = true;
   const pill = document.getElementById('stxt');
   try {
     const controller = new AbortController();
@@ -1589,6 +1592,7 @@ async function fetchData() {
   } catch (e) {
     console.warn('Fetch error:', e.message);
   } finally {
+    fetching = false;
     render();
     startRefreshBar();
   }
@@ -1943,14 +1947,8 @@ function renderTrades() {
   }).join('');
 }
 
-// ── Start — wait for DOM to be fully ready ──
-document.addEventListener('DOMContentLoaded', () => {
-  fetchData();
-});
-// Fallback if DOMContentLoaded already fired
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  fetchData();
-}
+// ── Start ──
+fetchData();
 </script>
 </body></html>
 """
