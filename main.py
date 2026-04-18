@@ -63,11 +63,24 @@ async def _post(path,body):
         r=await c.post(BASE+path,json=body); return r.json()
 
 async def get_balance():
-    try:
-        r=await _get("/v5/account/wallet-balance",{"accountType":"UNIFIED"},signed=True)
-        for c in r["result"]["list"][0]["coin"]:
-            if c["coin"]=="USDT": return float(c["availableToWithdraw"])
-    except: pass
+    # Try UNIFIED first, then CONTRACT (Bybit has both account types)
+    for acct_type in ["UNIFIED", "CONTRACT"]:
+        try:
+            r=await _get("/v5/account/wallet-balance",{"accountType":acct_type},signed=True)
+            ret_code=r.get("retCode",999)
+            if ret_code!=0:
+                print(f"Balance {acct_type} retCode={ret_code} msg={r.get('retMsg','')}")
+                continue
+            coins=r.get("result",{}).get("list",[{}])[0].get("coin",[])
+            for c in coins:
+                if c["coin"]=="USDT":
+                    val=float(c.get("availableToWithdraw") or c.get("walletBalance") or 0)
+                    if val>0:
+                        print(f"Balance found: ${val:.2f} ({acct_type})")
+                        return val
+        except Exception as e:
+            print(f"Balance err ({acct_type}): {e}")
+    print("Balance: could not fetch from either account type")
     return 0.0
 
 async def get_klines(symbol,interval="5",limit=30):
@@ -462,6 +475,18 @@ async def startup():
     asyncio.create_task(bot_loop())
 
 # ── API ──────────────────────────────────────────────────────
+
+@app.get("/api/debug")
+async def debug():
+    """Shows raw Bybit balance response — use to diagnose balance issues"""
+    results={}
+    for acct_type in ["UNIFIED","CONTRACT"]:
+        try:
+            r=await _get("/v5/account/wallet-balance",{"accountType":acct_type},signed=True)
+            results[acct_type]=r
+        except Exception as e:
+            results[acct_type]={"error":str(e)}
+    return JSONResponse(results)
 
 @app.get("/api/health")
 async def health():
