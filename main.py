@@ -2,11 +2,11 @@
 APEX Pro — Clean Rebuild
 ════════════════════════════════════════════════════════
 Signal stack:
-  Entry gate  : VWAP direction check
-  Score (0-100): OBI 35pts + CVD 35pts + OI Delta 20pts + bonus 10pts
-  Min score   : 75
-  Max positions: 3 concurrent
-  Exit        : Dynamic (momentum exhaustion) + hard SL
+Entry gate  : VWAP direction check
+Score (0-100): OBI 35pts + CVD 35pts + OI Delta 20pts + bonus 10pts
+Min score   : 65
+Max positions: 3 concurrent
+Exit        : Dynamic (2 fade OR 2 reversal signals) + hard SL
 
 Dashboard: Server-rendered HTML — no JS fetch issues
 """
@@ -19,29 +19,30 @@ import httpx
 app = FastAPI()
 
 # ── CONFIG ───────────────────────────────────────────────────
+
 API_KEY    = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BASE       = "https://api.bybit.com"
 SB_URL     = os.getenv("SUPABASE_URL", "")
 SB_KEY     = os.getenv("SUPABASE_KEY", "")
-MIN_SCORE  = 75
+MIN_SCORE  = 65          # ← lowered from 75
 MAX_POS    = 3
 LEVERAGE   = 2
 INTERVAL   = 30
 
 WATCHLIST = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "DOGEUSDT","AVAXUSDT","LINKUSDT","NEARUSDT","APTUSDT",
-    "OPUSDT","ARBUSDT","INJUSDT","SUIUSDT","THETAUSDT",
-    "LDOUSDT","STXUSDT","FTMUSDT","GRTUSDT","SANDUSDT",
+"BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+"DOGEUSDT","AVAXUSDT","LINKUSDT","NEARUSDT","APTUSDT",
+"OPUSDT","ARBUSDT","INJUSDT","SUIUSDT","THETAUSDT",
+"LDOUSDT","STXUSDT","FTMUSDT","GRTUSDT","SANDUSDT",
 ]
 
 state = {
-    "wins":0,"losses":0,"pnl":0.0,"balance":0.0,
-    "positions":{},"trades":[],"scan_log":[],
-    "trend_blocks":0,"score_blocks":0,
-    "last_signal":None,"status":"starting",
-    "last_scan":0,"start":int(time.time()),
+"wins":0,"losses":0,"pnl":0.0,"balance":0.0,
+"positions":{},"trades":[],"scan_log":[],
+"trend_blocks":0,"score_blocks":0,
+"last_signal":None,"status":"starting",
+"last_scan":0,"start":int(time.time()),
 }
 
 # ── BYBIT ────────────────────────────────────────────────────
@@ -67,12 +68,10 @@ async def get_balance():
         r=await _get("/v5/account/wallet-balance",{"accountType":"UNIFIED"},signed=True)
         if r.get("retCode")==0:
             account=r["result"]["list"][0]
-            # Use account-level totalAvailableBalance first (most reliable)
             bal=float(account.get("totalAvailableBalance") or 0)
             if bal>0:
                 print(f"Balance: ${bal:.2f} (account level)")
                 return bal
-            # Fallback: find USDT coin entry
             for c in account.get("coin",[]):
                 if c["coin"]=="USDT":
                     val=float(c.get("walletBalance") or c.get("equity") or 0)
@@ -262,33 +261,93 @@ def round_qty(qty,step):
     return round(math.floor(qty/step)*step,dec)
 
 # ── MOMENTUM EXIT ────────────────────────────────────────────
+#
+# Two independent exit paths — either fires an exit:
+#
+#   FADE PATH    : shrinking candles AND tiny body
+#   REVERSAL PATH: CVD flip against position AND OBI flip against position
+#
+# No minimum profit gate — capital protection is the priority.
+# One guard only: position must be at least 2 candles old (avoid entry noise).
 
-async def check_exit(symbol,pos):
-    entry=pos["entry"]; side=pos["side"]
-    c=await get_klines(symbol,"5",15)
-    if not c or len(c)<10: return False,""
-    price=float(c[-1][4])
-    pnl=(price-entry)/entry*100 if side=="long" else (entry-price)/entry*100
-    if pnl<0.3: return False,""
-    bodies=[abs(float(x[4])-float(x[1])) for x in c]
-    shrinking=bodies[-3]>bodies[-2]>bodies[-1]
-    avg=sum(bodies[-10:])/10; tiny=avg>0 and bodies[-1]<avg*0.4
-    tr=await get_trades(symbol); cvd_flat=False
-    if tr and len(tr)>=100:
-        f50=tr[50:100]; l50=tr[:50]
-        fc=sum(float(t["size"]) for t in f50 if t.get("side")=="Buy")-\
-           sum(float(t["size"]) for t in f50 if t.get("side")=="Sell")
-        lc=sum(float(t["size"]) for t in l50 if t.get("side")=="Buy")-\
-           sum(float(t["size"]) for t in l50 if t.get("side")=="Sell")
-        cvd_flat=(lc<fc*0.65 if side=="long" else lc>fc*0.65)
-    fired=sum([shrinking,tiny,cvd_flat])
-    if fired>=2:
-        parts=[]
-        if shrinking: parts.append("shrinking candles")
-        if tiny: parts.append("tiny body")
-        if cvd_flat: parts.append("CVD flat")
-        return True,f"Exhaustion ({', '.join(parts)}) at {pnl:.2f}%"
-    return False,""
+async def check_exit(symbol, pos):
+    entry = pos["entry"]
+    side  = pos["side"]
+    open_time = pos.get("open_time", int(time.time()))
+
+    # ── Guard: minimum 2-candle hold (2 × 5m = 10 minutes) ──
+    age_minutes = (int(time.time()) - open_time) / 60
+    if age_minutes < 10:
+        return False, ""
+
+    # ── Fetch candles + trades + orderbook in parallel ───────
+    c, tr, ob = await asyncio.gather(
+        get_klines(symbol, "5", 15),
+        get_trades(symbol),
+        get_orderbook(symbol),
+    )
+    if not c or len(c) < 10:
+        return False, ""
+
+    # ── FADE SIGNAL 1: Shrinking candles ─────────────────────
+    bodies = [abs(float(x[4]) - float(x[1])) for x in c]
+    shrinking = bodies[-3] > bodies[-2] > bodies[-1]
+
+    # ── FADE SIGNAL 2: Tiny body ──────────────────────────────
+    avg = sum(bodies[-10:]) / 10
+    tiny = avg > 0 and bodies[-1] < avg * 0.4
+
+    # ── REVERSAL SIGNAL 1: CVD flip against position ─────────
+    cvd_flip = False
+    if tr and len(tr) >= 100:
+        # last 50 trades vs prior 50
+        recent = tr[:50]
+        prior  = tr[50:100]
+        recent_buy = sum(float(t["size"]) for t in recent if t.get("side") == "Buy")
+        recent_sell= sum(float(t["size"]) for t in recent if t.get("side") == "Sell")
+        prior_buy  = sum(float(t["size"]) for t in prior  if t.get("side") == "Buy")
+        prior_sell = sum(float(t["size"]) for t in prior  if t.get("side") == "Sell")
+        recent_ratio = recent_buy / (recent_buy + recent_sell) if (recent_buy + recent_sell) > 0 else 0.5
+        prior_ratio  = prior_buy  / (prior_buy  + prior_sell)  if (prior_buy  + prior_sell)  > 0 else 0.5
+        # For SHORT: recent buying surging above 0.60 means reversal up
+        # For LONG:  recent selling surging (buy_ratio below 0.40) means reversal down
+        if side == "short":
+            cvd_flip = recent_ratio > 0.60 and recent_ratio > prior_ratio * 1.15
+        else:
+            cvd_flip = recent_ratio < 0.40 and recent_ratio < prior_ratio * 0.85
+
+    # ── REVERSAL SIGNAL 2: OBI flip against position ─────────
+    obi_flip = False
+    bids = ob.get("b", [])
+    asks = ob.get("a", [])
+    if bids and asks:
+        bv  = sum(float(b[1]) for b in bids)
+        av  = sum(float(a[1]) for a in asks)
+        tot = bv + av
+        if tot > 0:
+            obi = bv / tot
+            # SHORT position → bids dominating (>65%) = reversal up
+            # LONG  position → asks dominating (>65%) = reversal down
+            if side == "short":
+                obi_flip = obi > 0.65
+            else:
+                obi_flip = obi < 0.35
+
+    # ── DECISION ─────────────────────────────────────────────
+    fade_exit     = shrinking and tiny
+    reversal_exit = cvd_flip and obi_flip
+
+    if fade_exit:
+        price = float(c[-1][4])
+        pnl = (price - entry) / entry * 100 if side == "long" else (entry - price) / entry * 100
+        return True, f"Fade exit (shrinking candles + tiny body) at {pnl:+.2f}%"
+
+    if reversal_exit:
+        price = float(c[-1][4])
+        pnl = (price - entry) / entry * 100 if side == "long" else (entry - price) / entry * 100
+        return True, f"Reversal exit (CVD flip + OBI flip) at {pnl:+.2f}%"
+
+    return False, ""
 
 # ── SCAN LOOP ────────────────────────────────────────────────
 
@@ -405,7 +464,7 @@ async def monitor(sym,pos):
         r=await close_order(sym,pos["qty"],side)
         if r and r.get("retCode")==0:
             result="win" if pnl>0 else "loss"
-            await close_trade(pos,price,result,"DynamicExit"); return
+            await close_trade(pos,price,result,f"DynamicExit: {reason}"); return
 
     print(f"  HOLD {sym} | {pnl:+.2f}% | Peak:{pos.get('peak_pnl',0):+.2f}%")
 
@@ -445,7 +504,7 @@ async def sb_load():
     try:
         async with httpx.AsyncClient(timeout=4) as c:
             r=await c.get(f"{SB_URL}/rest/v1/trades?select=result,pnl&order=created_at.asc",
-                         headers={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"})
+                headers={"apikey":SB_KEY,"Authorization":f"Bearer {SB_KEY}"})
             trades=r.json()
             if isinstance(trades,list):
                 state["wins"]=sum(1 for t in trades if (t.get("result","")).lower()=="win")
@@ -458,7 +517,7 @@ async def sb_load():
 # ── BOT LOOP ─────────────────────────────────────────────────
 
 async def bot_loop():
-    print("APEX Pro starting...")
+    print("APEX Pro starting…")
     await sb_load()
     state["balance"]=await get_balance()
     state["status"]="running"
@@ -681,7 +740,7 @@ body{{background:#f5f2ed;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemF
 <div class="card">
   <div class="sys-row"><span>Balance</span><span>${fmt(bal,2)} USDT</span></div>
   <div class="sys-row"><span>Open Positions</span><span>{len(state['positions'])} / {MAX_POS}</span></div>
-  <div class="sys-row"><span>Min Score</span><span style="color:#16a34a">{MIN_SCORE} · STRONG</span></div>
+  <div class="sys-row"><span>Min Score</span><span style="color:#16a34a">{MIN_SCORE} · MEDIUM</span></div>
   <div class="sys-row"><span>Trend Blocks</span><span>{state['trend_blocks']}</span></div>
   <div class="sys-row"><span>Score Blocks</span><span>{state['score_blocks']}</span></div>
   <div class="sys-row"><span>Last Scan</span><span>{age}s ago</span></div>
