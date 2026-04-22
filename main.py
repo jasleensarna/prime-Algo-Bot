@@ -8,6 +8,12 @@ Min score   : 65
 Max positions: 3 concurrent
 Exit        : Dynamic (2 fade OR 2 reversal signals) + hard SL
 
+Market Regime (checked every scan cycle):
+  Fetch all USDT perpetuals → count % above their 5m VWAP
+  >70% above VWAP → BULLISH  → trade signal as-is
+  <30% above VWAP → BEARISH  → trade signal as-is (short bias)
+  30–70%          → CHOPPY   → FULL INVERSION (direction + SL flipped)
+
 Dashboard: Server-rendered HTML — no JS fetch issues
 """
 
@@ -30,19 +36,26 @@ MAX_POS    = 3
 LEVERAGE   = 2
 INTERVAL   = 30
 
-WATCHLIST = [
-"BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-"DOGEUSDT","AVAXUSDT","LINKUSDT","NEARUSDT","APTUSDT",
-"OPUSDT","ARBUSDT","INJUSDT","SUIUSDT","THETAUSDT",
-"LDOUSDT","STXUSDT","FTMUSDT","GRTUSDT","SANDUSDT",
+# WATCHLIST is now dynamic — fetched from Bybit each cycle
+# Fallback static list used only if API fetch fails
+WATCHLIST_FALLBACK = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+    "DOGEUSDT","AVAXUSDT","LINKUSDT","NEARUSDT","APTUSDT",
+    "OPUSDT","ARBUSDT","INJUSDT","SUIUSDT","THETAUSDT",
+    "LDOUSDT","STXUSDT","FTMUSDT","GRTUSDT","SANDUSDT",
 ]
 
 state = {
-"wins":0,"losses":0,"pnl":0.0,"balance":0.0,
-"positions":{},"trades":[],"scan_log":[],
-"trend_blocks":0,"score_blocks":0,
-"last_signal":None,"status":"starting",
-"last_scan":0,"start":int(time.time()),
+    "wins":0,"losses":0,"pnl":0.0,"balance":0.0,
+    "positions":{},"trades":[],"scan_log":[],
+    "trend_blocks":0,"score_blocks":0,
+    "last_signal":None,"status":"starting",
+    "last_scan":0,"start":int(time.time()),
+    # Market regime
+    "regime":"UNKNOWN",          # BULLISH / CHOPPY / BEARISH
+    "regime_breadth":0.0,        # % of coins above VWAP (0.0–1.0)
+    "regime_updated":0,          # timestamp of last regime calc
+    "watchlist":[],              # dynamic — all available USDT perps
 }
 
 # ── BYBIT ────────────────────────────────────────────────────
@@ -169,6 +182,91 @@ async def vwap_gate(symbol,direction):
     if not ok: info["reason"]=f"Price {'below' if direction=='long' else 'above'} VWAP ({pct:+.2f}%)"
     return ok,info
 
+# ── DYNAMIC WATCHLIST ────────────────────────────────────────
+
+async def fetch_all_symbols():
+    """Fetch all active USDT linear perpetuals from Bybit."""
+    try:
+        r = await _get("/v5/market/tickers", {"category": "linear"})
+        items = r.get("result", {}).get("list", [])
+        syms = [
+            x["symbol"] for x in items
+            if x["symbol"].endswith("USDT")
+            and float(x.get("volume24h", 0)) >= 500_000
+        ]
+        vol_map = {x["symbol"]: float(x.get("volume24h", 0)) for x in items}
+        syms.sort(key=lambda s: vol_map.get(s, 0), reverse=True)
+        return syms
+    except Exception as e:
+        print(f"fetch_all_symbols err: {e}")
+        return []
+
+# ── MARKET REGIME ─────────────────────────────────────────────
+#
+# Breadth = % of all USDT perps whose price is above approx VWAP proxy
+# >70% above VWAP → BULLISH  → trade signal as-is
+# <30% above VWAP → BEARISH  → trade signal as-is
+# 30–70%          → CHOPPY   → fully invert signal (direction + SL)
+#
+# Recalculated every 5 minutes using single batch tickers call.
+
+async def calc_regime():
+    """Calculate market breadth from a single tickers API call."""
+    try:
+        r = await _get("/v5/market/tickers", {"category": "linear"})
+        items = r.get("result", {}).get("list", [])
+        usdt = [
+            x for x in items
+            if x["symbol"].endswith("USDT")
+            and float(x.get("volume24h", 0)) >= 500_000
+        ]
+        if len(usdt) < 10:
+            return "UNKNOWN", 0.0, []
+
+        above = 0
+        symbols = []
+        for x in usdt:
+            symbols.append(x["symbol"])
+            price = float(x.get("lastPrice", 0))
+            high  = float(x.get("highPrice24h", price) or price)
+            low   = float(x.get("lowPrice24h",  price) or price)
+            # Fast VWAP proxy using 24h high/low/close
+            approx_vwap = (high + low + price) / 3
+            if price > approx_vwap:
+                above += 1
+
+        breadth = above / len(usdt)
+        if breadth > 0.70:
+            regime = "BULLISH"
+        elif breadth < 0.30:
+            regime = "BEARISH"
+        else:
+            regime = "CHOPPY"
+
+        print(f"  Regime: {regime} | Breadth: {breadth:.1%} ({above}/{len(usdt)} coins above VWAP)")
+        return regime, breadth, symbols
+
+    except Exception as e:
+        print(f"calc_regime err: {e}")
+        return "UNKNOWN", 0.0, []
+
+def apply_regime(direction, entry, sl_pct, regime):
+    """
+    CHOPPY → invert direction + recalculate SL on correct side.
+    BULLISH / BEARISH → trade as-is.
+    Returns (final_direction, final_sl).
+    """
+    if regime != "CHOPPY":
+        sl = get_sl_price(entry, direction, sl_pct)
+        return direction, sl
+    inv = "short" if direction == "long" else "long"
+    sl  = get_sl_price(entry, inv, sl_pct)
+    return inv, sl
+
+def get_sl_price(entry, direction, sl_pct):
+    m = 1 if direction == "long" else -1
+    return round(entry * (1 - m * sl_pct / 100), 6)
+
 # ── SCORE ────────────────────────────────────────────────────
 
 async def score_signal(symbol,direction):
@@ -248,8 +346,8 @@ async def score_signal(symbol,direction):
 
 def get_sl(score,entry,direction):
     sl_pct=3.0 if score>=90 else 2.5 if score>=80 else 2.0
-    m=1 if direction=="long" else -1
-    return round(entry*(1-m*sl_pct/100),6), sl_pct
+    sl = get_sl_price(entry, direction, sl_pct)
+    return sl, sl_pct
 
 def get_size(score,balance):
     pct=25 if score>=90 else 20 if score>=80 else 15
@@ -352,6 +450,18 @@ async def check_exit(symbol, pos):
 # ── SCAN LOOP ────────────────────────────────────────────────
 
 async def scan_once():
+    # ── Refresh regime every 5 minutes ───────────────────────
+    now = int(time.time())
+    if now - state["regime_updated"] > 300:
+        regime, breadth, symbols = await calc_regime()
+        state["regime"] = regime
+        state["regime_breadth"] = round(breadth, 4)
+        state["regime_updated"] = now
+        if symbols:
+            state["watchlist"] = symbols
+        elif not state["watchlist"]:
+            state["watchlist"] = WATCHLIST_FALLBACK
+
     # Monitor existing positions
     if state["positions"]:
         await asyncio.gather(*[monitor(sym,pos) for sym,pos in list(state["positions"].items())])
@@ -362,14 +472,15 @@ async def scan_once():
     state["balance"]=await get_balance()
     if state["balance"]<10: return
 
+    watchlist = state["watchlist"] or WATCHLIST_FALLBACK
     new=0
-    for sym in WATCHLIST:
+    for sym in watchlist:
         if new>=slots: break
         if sym in state["positions"]: continue
         try:
             entered=await scan_symbol(sym)
             if entered: new+=1
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.3)
         except Exception as e:
             print(f"Scan err {sym}: {e}")
 
@@ -389,7 +500,8 @@ async def scan_symbol(sym):
     gate_ok,gate=await vwap_gate(sym,direction)
     log_entry={"symbol":sym,"direction":direction,"price":round(price,4),
                "change":round(chg,2),"vol":round(vol/1e6,1),
-               "gate":gate,"score":None,"label":None,"blocked_by":None,"time":int(time.time())}
+               "gate":gate,"score":None,"label":None,"blocked_by":None,
+               "regime":state["regime"],"time":int(time.time())}
 
     if not gate_ok:
         state["trend_blocks"]+=1
@@ -407,33 +519,44 @@ async def scan_symbol(sym):
 
     log_entry["blocked_by"]=None
     _log(log_entry)
-    print(f"  SIGNAL {sym} {direction.upper()} {score} ({label})")
-    state["last_signal"]={"symbol":sym,"direction":direction,"score":score,"label":label,"time":int(time.time())}
-    return await enter(sym,direction,score,label,price)
+
+    # Apply regime — may invert direction + SL
+    regime = state["regime"]
+    sl_pct = 3.0 if score>=90 else 2.5 if score>=80 else 2.0
+    final_direction, final_sl = apply_regime(direction, price, sl_pct, regime)
+    inverted = final_direction != direction
+
+    print(f"  SIGNAL {sym} {direction.upper()}→{final_direction.upper()} score={score} ({label}) regime={regime}{' [INVERTED]' if inverted else ''}")
+    state["last_signal"]={
+        "symbol":sym,"direction":final_direction,"score":score,
+        "label":label,"regime":regime,"inverted":inverted,"time":int(time.time())
+    }
+    return await enter(sym, final_direction, score, label, price, final_sl, sl_pct, regime, inverted)
 
 def _log(entry):
     state["scan_log"].insert(0,entry)
     state["scan_log"]=state["scan_log"][:20]
 
-async def enter(sym,direction,score,label,price):
+async def enter(sym, direction, score, label, price, final_sl, sl_pct, regime, inverted):
     per_slot=state["balance"]/MAX_POS
     size=get_size(score,per_slot)
-    sl,sl_pct=get_sl(score,price,direction)
     step,min_qty=await get_instrument(sym)
     qty=round_qty(size*LEVERAGE/price,step)
     if qty<min_qty:
         qty=round_qty(state["balance"]*0.20*LEVERAGE/price,step)
     if qty<min_qty:
         print(f"  SKIP {sym}: qty {qty} < min {min_qty}"); return False
-    resp=await place_order(sym,direction,qty,sl)
+    resp=await place_order(sym,direction,qty,final_sl)
     if not resp or resp.get("retCode")!=0:
         print(f"  ORDER FAIL {sym}: {resp}"); return False
     state["positions"][sym]={
         "symbol":sym,"side":direction,"entry":price,"qty":qty,
-        "sl":sl,"sl_pct":sl_pct,"score":score,"label":label,
+        "sl":final_sl,"sl_pct":sl_pct,"score":score,"label":label,
+        "regime":regime,"inverted":inverted,
         "peak_pnl":0.0,"open_time":int(time.time()),
     }
-    print(f"  ENTERED {sym} {direction.upper()} qty={qty} SL={sl} ({sl_pct}%)")
+    tag = " [INVERTED]" if inverted else ""
+    print(f"  ENTERED {sym} {direction.upper()} qty={qty} SL={final_sl} ({sl_pct}%) regime={regime}{tag}")
     await sb_save(state["positions"][sym],"open",price)
     return True
 
@@ -635,10 +758,15 @@ async def dashboard():
         else:
             tag=f'<span class="tag tag-signal">SIGNAL ✓ {score}</span>'
         dir_tag=f'<span class="tag tag-{"long" if s.get("direction")=="long" else "short"}">{(s.get("direction","")).upper()}</span>'
+        regime_tag=""
+        if s.get("regime"):
+            rc = "#16a34a" if s["regime"]=="BULLISH" else "#ef4444" if s["regime"]=="BEARISH" else "#ca8a04"
+            inv = " ↕" if s.get("inverted") else ""
+            regime_tag = f'<span style="font-size:10px;color:{rc};font-weight:600">{s["regime"]}{inv}</span>'
         log_html+=f"""
         <div class="log-row">
           <span class="sym">{s.get('symbol','').replace('USDT','')}/USDT</span>
-          {dir_tag} {tag}
+          {dir_tag} {tag} {regime_tag}
           <span class="age">{age_str} ago</span>
         </div>"""
 
@@ -741,6 +869,8 @@ body{{background:#f5f2ed;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemF
   <div class="sys-row"><span>Balance</span><span>${fmt(bal,2)} USDT</span></div>
   <div class="sys-row"><span>Open Positions</span><span>{len(state['positions'])} / {MAX_POS}</span></div>
   <div class="sys-row"><span>Min Score</span><span style="color:#16a34a">{MIN_SCORE} · MEDIUM</span></div>
+  <div class="sys-row"><span>Market Regime</span><span style="color:{'#16a34a' if state['regime']=='BULLISH' else '#ef4444' if state['regime']=='BEARISH' else '#ca8a04'}">{state['regime']} · {state['regime_breadth']:.0%} above VWAP</span></div>
+  <div class="sys-row"><span>Watchlist Size</span><span>{len(state['watchlist'])} coins</span></div>
   <div class="sys-row"><span>Trend Blocks</span><span>{state['trend_blocks']}</span></div>
   <div class="sys-row"><span>Score Blocks</span><span>{state['score_blocks']}</span></div>
   <div class="sys-row"><span>Last Scan</span><span>{age}s ago</span></div>
